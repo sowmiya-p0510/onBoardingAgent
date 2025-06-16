@@ -1,39 +1,25 @@
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
+from crewai import Agent
+from langchain_openai import ChatOpenAI
 from dotenv import load_dotenv
 import os
-import logging
+from supabase import create_client, Client
 
-# Import our agents - using simplified Welcome Agent
-from agents.welcome_agent_simple import SimpleWelcomeAgent, WelcomeRequest, WelcomeResponse
+# Import our agents
+from agents.benefit_agent import BenefitAgent, BenefitFetchRequest, BenefitFetchResponse
+from agents.policy_agent import PolicyAgent, PolicyFetchRequest, PolicyFetchResponse
+# Import our new WelcomeAgent instead of SimpleWelcomeAgent
+from agents.welcome_agent import WelcomeAgent, WelcomeRequest, WelcomeResponse, UserProfile
 
 # Import GCS utilities
 from utils.gcs_utils import GCSManager
 
-# Try to import optional dependencies
-try:
-    from supabase import create_client, Client
-    SUPABASE_AVAILABLE = True
-except ImportError:
-    SUPABASE_AVAILABLE = False
-    Client = None
-
-# Try to import benefit agent (optional for now)
-try:
-    from agents.benefit_agent import BenefitAgent, BenefitFetchRequest, BenefitFetchResponse
-    BENEFIT_AGENT_AVAILABLE = True
-except ImportError:
-    BENEFIT_AGENT_AVAILABLE = False
-
 # Load environment variables
 load_dotenv()
 
-# Setup logging
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
-
 # Initialize FastAPI app
-app = FastAPI(title="AI Onboarding System - Integrated Welcome Agent")
+app = FastAPI(title="AI Onboarding System")
 
 # Pydantic models for input
 class OnboardingRequest(BaseModel):
@@ -47,213 +33,237 @@ class OnboardingRequest(BaseModel):
 class OnboardingResponse(BaseModel):
     success: bool
     welcome_message: str
-    benefits_summary: str
+    benefits_summary: str = None
+    policy_summary: str = None
     next_steps: list
     documents: list
     team_contacts: dict
 
+# Create the LLM
+llm = ChatOpenAI(model_name="gpt-4", temperature=0.5)
+
+# Define agents with detailed prompts
+hr_agent = Agent(
+    role='HR Onboarding Specialist',
+    goal='Create personalized, comprehensive onboarding materials that make new employees feel welcome and prepared',
+    backstory="""You are an experienced HR professional with expertise in employee onboarding.
+    You understand that starting a new job can be overwhelming, so you create warm, 
+    informative onboarding materials that ease the transition. You have a knack for 
+    balancing professional information with a friendly, welcoming tone. You're known 
+    for your attention to detail and ability to customize materials for different roles.""",
+    llm=llm,
+    verbose=True
+)
+
+benefit_specialist = Agent(
+    role='Employee Benefits Expert',
+    goal='Help employees fully understand and maximize their benefits package',
+    backstory="""You are a seasoned benefits specialist with deep knowledge of corporate 
+    benefit programs. You have a talent for explaining complex benefits information in 
+    simple, actionable terms. You understand that employees often find benefits confusing, 
+    so you focus on clarity and practical advice. You're particularly skilled at highlighting 
+    the most valuable aspects of each benefit and explaining how they work together to 
+    provide comprehensive coverage. You always emphasize key deadlines, eligibility 
+    requirements, and enrollment procedures.""",
+    llm=llm,
+    verbose=True
+)
+
+policy_specialist = Agent(
+    role='Company Policy Expert',
+    goal='Help employees understand and comply with company policies',
+    backstory="""You are a knowledgeable policy expert with extensive experience in corporate 
+    governance and compliance. You excel at explaining complex policies in clear, accessible 
+    language. You understand that employees need to know both the letter and spirit of company 
+    policies, so you focus on practical explanations and real-world applications. You're skilled 
+    at highlighting the most important aspects of each policy and explaining why they matter. 
+    You always emphasize key compliance requirements, reporting procedures, and employee 
+    responsibilities in a supportive, non-threatening way.""",
+    llm=llm,
+    verbose=True
+)
+
 # Initialize helpers
 gcs_manager = GCSManager()
 
-def get_supabase_client():
+def get_supabase_client() -> Client:
     """Create and return a Supabase client."""
-    if not SUPABASE_AVAILABLE:
-        return None
     supabase_url = os.environ.get("SUPABASE_URL")
     supabase_key = os.environ.get("SUPABASE_KEY")
-    if supabase_url and supabase_key:
-        return create_client(supabase_url, supabase_key)
-    return None
+    return create_client(supabase_url, supabase_key)
 
-# Initialize Welcome Agent (always available)
-welcome_agent = SimpleWelcomeAgent()
-logger.info("✅ Welcome Agent initialized")
-
-# Initialize Benefit Agent (if available)
-if BENEFIT_AGENT_AVAILABLE:
-    try:
-        benefit_agent = BenefitAgent()
-        logger.info("✅ Benefit Agent initialized")
-    except Exception as e:
-        logger.warning(f"❌ Benefit Agent failed to initialize: {e}")
-        BENEFIT_AGENT_AVAILABLE = False
-else:
-    logger.info("ℹ️ Benefit Agent not available - continuing with Welcome Agent only")
-
-# Log available services
-logger.info(f"🔧 Supabase available: {SUPABASE_AVAILABLE}")
-logger.info(f"🔧 Benefit Agent available: {BENEFIT_AGENT_AVAILABLE}")
+# Initialize agents
+welcome_agent = WelcomeAgent(agent=hr_agent)  # Using our new WelcomeAgent
+benefit_agent = BenefitAgent(agent=benefit_specialist)
+policy_agent = PolicyAgent(agent=policy_specialist)
 
 @app.post("/onboard", response_model=OnboardingResponse)
 async def onboard_employee(req: OnboardingRequest):
     """
-    Complete onboarding process using integrated Welcome Agent
-    
+    Complete onboarding process using multiple agents
+
     This endpoint orchestrates agents to provide a comprehensive onboarding experience:
     1. Welcome Agent: Creates personalized welcome message and guidance
-    2. Benefits Agent: Fetches and summarizes benefit documents (if available)
+    2. Benefits Agent: Fetches and summarizes benefit documents
+    3. Policy Agent: Fetches and summarizes policy documents
     """
     try:
-        logger.info(f"🎯 Processing onboarding for {req.name}")
-        
         # Get detailed welcome info from Welcome Agent
-        welcome_request = WelcomeRequest(
-            name=req.name,
-            role=req.role,
-            team=req.team,
-            manager=req.manager,
-            start_date=req.start_date,
-            email=req.email
-        )
-        welcome_response = welcome_agent.generate_welcome_message(welcome_request)
-        
-        # Get benefits information (if benefit agent is available)
+        supabase = get_supabase_client()
+        welcome_request = WelcomeRequest(email=req.email)
+        welcome_response = welcome_agent.process_request(welcome_request, supabase_client=supabase)
+
+        # Get benefits information
         benefits_summary = "Benefits information will be provided by HR during your first week."
-        if BENEFIT_AGENT_AVAILABLE:
-            try:
-                supabase = get_supabase_client()
-                if supabase:
-                    benefit_request = BenefitFetchRequest(role=req.role, email=req.email)
-                    benefits_response = benefit_agent.process_request(
-                        benefit_request,
-                        supabase_client=supabase,
-                        get_signed_url=gcs_manager.get_signed_url,
-                        list_files_in_folder=gcs_manager.list_files_in_folder,
-                        check_file_exists=gcs_manager.check_file_exists
-                    )
-                    if benefits_response.success:
-                        benefits_summary = benefits_response.overall_summary
-                    else:
-                        logger.warning("Benefits processing failed, using fallback")
-                else:
-                    logger.warning("Supabase client not available")
-            except Exception as e:
-                logger.error(f"Benefits processing error: {e}")
-        
-        return OnboardingResponse(
-            success=True,
-            welcome_message=welcome_response.welcome_message if welcome_response.success else f"Welcome {req.name}! We're excited to have you join our {req.team} team as our new {req.role}.",
-            benefits_summary=benefits_summary,
-            next_steps=welcome_response.next_steps if welcome_response.success else [
-                f"Contact your manager {req.manager} for guidance",
-                "Complete employee documentation",
-                "Review company policies"
-            ],
-            documents=welcome_response.available_documents if welcome_response.success else [
-                "Employee Handbook", "Company Policies"
-            ],
-            team_contacts=welcome_response.team_contacts if welcome_response.success else {
-                "manager": req.manager,
-                "team": req.team
-            }
-        )
-        
-    except Exception as e:
-        logger.error(f"❌ Onboarding error for {req.name}: {e}")
-        raise HTTPException(status_code=500, detail=f"Error processing onboarding: {str(e)}")
-
-@app.post("/welcome", response_model=WelcomeResponse)
-async def generate_welcome(req: WelcomeRequest):
-    """Generate personalized welcome message."""
-    try:
-        response = welcome_agent.generate_welcome_message(req)
-        return response
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Error generating welcome message: {str(e)}")
-
-@app.post("/chat")
-async def chat_with_welcome_agent(question: str, user_name: str):
-    """Chat with the welcome agent."""
-    try:
-        answer = welcome_agent.answer_question(question, user_name)
-        return {"answer": answer, "user": user_name}
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Error processing chat: {str(e)}")
-
-# Conditionally add benefit endpoint only if benefit agent is available
-if BENEFIT_AGENT_AVAILABLE:
-    @app.post("/benefit/fetch", response_model=BenefitFetchResponse)
-    async def fetch_benefits(req: BenefitFetchRequest):
-        """Fetch and summarize benefit documents for an employee."""
         try:
-            supabase = get_supabase_client()
-            if not supabase:
-                raise HTTPException(status_code=503, detail="Database service unavailable")
-                
-            response = benefit_agent.process_request(
-                req, 
+            benefit_request = BenefitFetchRequest(role=req.role, email=req.email)
+            benefits_response = benefit_agent.process_request(
+                benefit_request,
                 supabase_client=supabase,
                 get_signed_url=gcs_manager.get_signed_url,
                 list_files_in_folder=gcs_manager.list_files_in_folder,
                 check_file_exists=gcs_manager.check_file_exists
             )
-            return response
+            if benefits_response.success:
+                benefits_summary = benefits_response.overall_summary
         except Exception as e:
-            logger.error(f"❌ Benefits fetch error: {e}")
-            raise HTTPException(status_code=500, detail=f"Error fetching benefits: {str(e)}")
-else:
-    @app.post("/benefit/fetch")
-    async def fetch_benefits_unavailable():
-        """Benefit service unavailable endpoint."""
-        raise HTTPException(
-            status_code=503, 
-            detail="Benefit Agent service is currently unavailable. Please contact HR for benefits information."
+            print(f"Benefits processing error: {e}")
+
+        # Get policy information
+        policy_summary = "Company policies will be provided during your orientation."
+        try:
+            policy_request = PolicyFetchRequest(role=req.role, email=req.email)
+            policy_response = policy_agent.process_request(
+                policy_request,
+                supabase_client=supabase,
+                get_signed_url=gcs_manager.get_signed_url,
+                list_files_in_folder=gcs_manager.list_files_in_folder,
+                check_file_exists=gcs_manager.check_file_exists
+            )
+            if policy_response.success:
+                policy_summary = policy_response.overall_summary
+        except Exception as e:
+            print(f"Policy processing error: {e}")
+
+        # Create default response if welcome agent fails
+        default_welcome = f"Welcome {req.name}! We're excited to have you join our {req.team} team as our new {req.role}."
+
+        # Prepare response using welcome agent data or defaults
+        if welcome_response.success and welcome_response.welcome_message:
+            welcome_message = welcome_response.welcome_message
+        else:
+            welcome_message = default_welcome
+
+        # Extract user profile if available
+        user_profile = welcome_response.user_profile if welcome_response.success else None
+
+        # Create next steps and team contacts
+        next_steps = [
+            f"Contact your manager {user_profile.manager_name if user_profile else req.manager} for guidance",
+            "Complete employee documentation",
+            "Review company policies"
+        ]
+
+        team_contacts = {
+            "manager": user_profile.manager_name if user_profile else req.manager,
+            "manager_email": user_profile.manager_email if user_profile else "",
+            "department": user_profile.department if user_profile else req.team
+        }
+
+        return OnboardingResponse(
+            success=True,
+            welcome_message=welcome_message,
+            benefits_summary=benefits_summary,
+            policy_summary=policy_summary,
+            next_steps=next_steps,
+            documents=["Employee Handbook", "Company Policies"],
+            team_contacts=team_contacts
         )
+
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error processing onboarding: {str(e)}")
+
+@app.post("/welcome/fetch", response_model=WelcomeResponse)
+async def generate_welcome(req: WelcomeRequest):
+    """Generate personalized welcome message using user profile from database."""
+    try:
+        supabase = get_supabase_client()
+        response = welcome_agent.process_request(req, supabase_client=supabase)
+        return response
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error generating welcome message: {str(e)}")
+
+@app.post("/benefit/fetch", response_model=BenefitFetchResponse)
+async def fetch_benefits(req: BenefitFetchRequest):
+    """Fetch and summarize benefit documents for an employee."""
+    try:
+        supabase = get_supabase_client()
+        response = benefit_agent.process_request(
+            req, 
+            supabase_client=supabase,
+            get_signed_url=gcs_manager.get_signed_url,
+            list_files_in_folder=gcs_manager.list_files_in_folder,
+            check_file_exists=gcs_manager.check_file_exists
+        )
+        return response
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error fetching benefits: {str(e)}")
+
+@app.post("/policy/fetch", response_model=PolicyFetchResponse)
+async def fetch_policies(req: PolicyFetchRequest):
+    """Fetch and summarize policy documents for an employee."""
+    try:
+        supabase = get_supabase_client()
+        response = policy_agent.process_request(
+            req, 
+            supabase_client=supabase,
+            get_signed_url=gcs_manager.get_signed_url,
+            list_files_in_folder=gcs_manager.list_files_in_folder,
+            check_file_exists=gcs_manager.check_file_exists
+        )
+        return response
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error fetching policies: {str(e)}")
 
 @app.get("/health")
 async def health_check():
     """Health check endpoint."""
-    welcome_health = welcome_agent.health_check()
-    
-    health_status = {
+    return {
         "status": "healthy",
-        "message": "Welcome Agent integration successful",
+        "message": "All agents operational",
         "agents": {
-            "welcome_agent": welcome_health
+            "welcome_agent": {"status": "healthy", "agent_type": "welcome"},
+            "benefit_agent": {"status": "healthy", "agent_type": "benefit"},
+            "policy_agent": {"status": "healthy", "agent_type": "policy"}
         },
-        "version": "1.0.0-integrated"
+        "version": "1.0.0"
     }
-    
-    # Add benefit agent status if available
-    if BENEFIT_AGENT_AVAILABLE:
-        health_status["agents"]["benefit_agent"] = {
-            "status": "healthy", 
-            "agent_type": "benefit",
-            "available": True
-        }
-    else:
-        health_status["agents"]["benefit_agent"] = {
-            "status": "unavailable", 
-            "agent_type": "benefit",
-            "available": False,
-            "reason": "Dependencies not available"
-        }
-    
-    return health_status
 
-# Development endpoints for testing
 @app.get("/")
 async def root():
     """Root endpoint with basic info"""
     return {
-        "message": "AI Onboarding System - Welcome Agent Integrated",
+        "message": "AI Onboarding System - Multiple Agents",
         "status": "running",
         "available_endpoints": [
             "/health - Health check",
             "/welcome - Generate welcome message",
-            "/chat - Chat with welcome agent", 
             "/onboard - Complete onboarding process",
-            "/benefit/fetch - Fetch benefits (if available)",
+            "/benefit/fetch - Fetch benefits",
+            "/policy/fetch - Fetch policies",
             "/docs - API documentation"
         ],
-        "welcome_agent": "✅ Active",
-        "benefit_agent": "🔄 Optional (check /health for status)"
+        "agents": {
+            "welcome_agent": "✅ Active",
+            "benefit_agent": "✅ Active",
+            "policy_agent": "✅ Active"
+        }
     }
 
 if __name__ == "__main__":
     import uvicorn
-    print("🚀 Starting AI Onboarding System with Integrated Welcome Agent...")
+    print("🚀 Starting AI Onboarding System...")
     print("📍 Server will be available at: http://localhost:8000")
-    print("📚 API Documentation at: http://localhost:8000/docs")
-    print("🎯 Welcome Agent integration active!")
+    print("📚 API documentation at: http://localhost:8000/docs")
+    print("🎯 All agents active!")
     uvicorn.run(app, host="0.0.0.0", port=8000)
