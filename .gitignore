@@ -1,10 +1,12 @@
 # Environment variables
 .env
 .env.*
-service-account.json
 
 # VS Code files
 .vscode/tasks.json
+
+# Credentials and secrets
+service-account.json
 
 # Python
 __pycache__/
