@@ -43,9 +43,8 @@ class OnboardingResponse(BaseModel):
     team_contacts: dict
 
 class ChatRequest(BaseModel):
-    user_id: str
+    email: str
     question: str
-    session_id: Optional[str] = None
 
 # Create the LLM
 llm = ChatOpenAI(model_name="gpt-4", temperature=0.5)
@@ -248,8 +247,7 @@ async def chat_with_agent(req: ChatRequest):
         return {
             "response": response,
             "status": "success",
-            "user_id": req.user_id,
-            "session_id": req.session_id
+            "email": req.email
         }
     
     except Exception as e:
