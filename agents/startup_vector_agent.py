@@ -27,9 +27,12 @@ class StartupVectorChatAgent:
         self._list_files_in_folder = None
         self._get_signed_url = None
         self._check_file_exists = None
-        
-        # Track user sessions for personalized greetings
+          # Track user sessions for personalized greetings
         self.user_sessions = {}
+        
+        # URL cache for fast document reference generation
+        self.url_cache = {}  # {file_path: {'url': signed_url, 'expires_at': timestamp}}
+        self.url_cache_duration = 3000  # 50 minutes (safe buffer from 1 hour expiration)
         
         print("✅ Agent initialized - ready for preloading")
     
@@ -91,6 +94,30 @@ class StartupVectorChatAgent:
                 llm=self.llm
             )
         return self._agent
+    
+    def get_cached_signed_url(self, file_path: str, get_signed_url) -> str:
+        """Lightning-fast URL generation with intelligent caching"""
+        current_time = time.time()
+        
+        # Check cache first (microsecond lookup)
+        if file_path in self.url_cache:
+            cache_entry = self.url_cache[file_path]
+            if current_time < cache_entry['expires_at']:
+                return cache_entry['url']  # Instant return from cache
+        
+        # Generate new URL only if needed
+        try:
+            new_url = get_signed_url(file_path, expiration=3600)  # 1 hour
+            if new_url:
+                self.url_cache[file_path] = {
+                    'url': new_url,
+                    'expires_at': current_time + self.url_cache_duration
+                }
+                return new_url
+        except Exception as e:
+            print(f"URL generation error for {file_path}: {e}")
+        
+        return ""
     
     def extract_text_from_pdf_fast(self, pdf_url: str) -> str:
         """Fast PDF extraction with limits"""
@@ -172,8 +199,7 @@ class StartupVectorChatAgent:
                 name=self.collection_name,
                 metadata={"hnsw:space": "cosine"}
             )
-            
-            # Load documents quickly
+              # Load documents quickly
             documents = self.load_documents_parallel(list_files_in_folder, get_signed_url, check_file_exists)
             
             if not documents:
@@ -186,26 +212,27 @@ class StartupVectorChatAgent:
             all_ids = []
             
             chunk_id = 0
-            for doc_name, content in documents.items():
+            for doc_name, (content, file_path) in documents.items():  # Unpack content and file path
                 chunks = self.chunk_text_simple(content)
                 
                 for i, chunk in enumerate(chunks):
                     all_chunks.append(chunk)
                     all_metadatas.append({
                         "source": doc_name,
+                        "file_path": file_path,  # Store the original GCS file path
                         "chunk_index": i,
                         "doc_type": "policy" if "policy" in doc_name.lower() else "benefit",
                         "documents_hash": current_hash if chunk_id == 0 else ""  # Store hash only once
                     })
                     all_ids.append(f"{doc_name}_chunk_{i}")
                     chunk_id += 1
-              # Add all chunks at once
+            
+            # Add all chunks at once
             if all_chunks:
                 self.collection.add(
                     documents=all_chunks,
                     metadatas=all_metadatas,
-                    ids=all_ids
-                )
+                    ids=all_ids                )
                 
                 print(f"✅ Vector store created: {len(all_chunks)} chunks from {len(documents)} docs")
                 return True
@@ -216,8 +243,8 @@ class StartupVectorChatAgent:
             print(f"❌ Vector store initialization error: {e}")
             return False
     
-    def load_documents_parallel(self, list_files_in_folder, get_signed_url, check_file_exists) -> Dict[str, str]:
-        """Load documents with some optimization"""
+    def load_documents_parallel(self, list_files_in_folder, get_signed_url, check_file_exists) -> Dict[str, tuple]:
+        """Load documents and store content with file paths"""
         documents = {}
         
         for folder in ["policies/", "benefits/"]:
@@ -232,7 +259,7 @@ class StartupVectorChatAgent:
                             content = self.extract_text_from_pdf_fast(signed_url)
                             if content:
                                 file_name = file_path.split('/')[-1].replace('.pdf', '')
-                                documents[file_name] = content
+                                documents[file_name] = (content, file_path)  # Store content AND file path
                                 print(f"✅ Loaded: {file_name}")
                         
                         # Small delay to be gentle on GCS
@@ -259,7 +286,8 @@ class StartupVectorChatAgent:
             for i, doc in enumerate(results['documents'][0]):
                 relevant_content.append({
                     'content': doc,
-                    'source': results['metadatas'][0][i]['source']
+                    'source': results['metadatas'][0][i]['source'],
+                    'file_path': results['metadatas'][0][i].get('file_path')  # Include file path
                 })
             
             return relevant_content
@@ -356,12 +384,36 @@ Answer:"""
 
             response = self.llm.invoke(prompt)
             
+            # Generate URLs for referenced documents (happens in parallel with response processing)
+            referenced_documents = []
+            unique_files = set()
+            
+            for item in relevant_content:
+                file_path = item.get('file_path')
+                if file_path and file_path not in unique_files:
+                    # Cache hit = instant, cache miss = minimal delay
+                    signed_url = self.get_cached_signed_url(file_path, get_signed_url)
+                    if signed_url:
+                        referenced_documents.append({
+                            'name': item['source'],
+                            'url': signed_url,
+                            'type': item.get('doc_type', 'document')
+                        })
+                        unique_files.add(file_path)
+            
             # Add welcome message for first-time users
             final_response = response.content
+            
+            # Add reference document links if any were found
+            if referenced_documents:
+                final_response += "\n\n📎 **Reference Documents:**\n"
+                for doc in referenced_documents:
+                    final_response += f"• [{doc['name']}]({doc['url']})\n"
+            
             if is_first_message and supabase_client:
                 user_profile = self.get_user_profile(email, supabase_client)
                 welcome = self.generate_welcome_message(user_profile)
-                final_response = f"{welcome}\n\n{response.content}"
+                final_response = f"{welcome}\n\n{final_response}"
             
             total_time = time.time() - start_time
             print(f"⚡ Response time: {total_time:.1f}s")
