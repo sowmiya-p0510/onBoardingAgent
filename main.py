@@ -4,6 +4,8 @@ from crewai import Agent
 from langchain_openai import ChatOpenAI
 from dotenv import load_dotenv
 import os
+from datetime import datetime
+from typing import Optional
 from supabase import create_client, Client
 
 # Import our agents
@@ -11,6 +13,7 @@ from agents.benefit_agent import BenefitAgent, BenefitFetchRequest, BenefitFetch
 from agents.policy_agent import PolicyAgent, PolicyFetchRequest, PolicyFetchResponse
 # Import our new WelcomeAgent instead of SimpleWelcomeAgent
 from agents.welcome_agent import WelcomeAgent, WelcomeRequest, WelcomeResponse, UserProfile
+from agents.chat_agent import ChatAgent
 
 # Import GCS utilities
 from utils.gcs_utils import GCSManager
@@ -38,6 +41,11 @@ class OnboardingResponse(BaseModel):
     next_steps: list
     documents: list
     team_contacts: dict
+
+class ChatRequest(BaseModel):
+    user_id: str
+    question: str
+    session_id: Optional[str] = None
 
 # Create the LLM
 llm = ChatOpenAI(model_name="gpt-4", temperature=0.5)
@@ -96,6 +104,7 @@ def get_supabase_client() -> Client:
 welcome_agent = WelcomeAgent(agent=hr_agent)  # Using our new WelcomeAgent
 benefit_agent = BenefitAgent(agent=benefit_specialist)
 policy_agent = PolicyAgent(agent=policy_specialist)
+chat_agent = ChatAgent()
 
 @app.post("/onboard", response_model=OnboardingResponse)
 async def onboard_employee(req: OnboardingRequest):
@@ -225,6 +234,63 @@ async def fetch_policies(req: PolicyFetchRequest):
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error fetching policies: {str(e)}")
 
+@app.post("/chat")
+async def chat_with_agent(req: ChatRequest):
+    """Chat endpoint for policy and benefits questions"""
+    try:
+        response = chat_agent.process_chat_request(
+            question=req.question,
+            list_files_in_folder=gcs_manager.list_files_in_folder,
+            get_signed_url=gcs_manager.get_signed_url,
+            check_file_exists=gcs_manager.check_file_exists
+        )
+        
+        return {
+            "response": response,
+            "status": "success",
+            "user_id": req.user_id,
+            "session_id": req.session_id
+        }
+    
+    except Exception as e:
+        return {
+            "response": "I'm sorry, I encountered an error while processing your request. Please try again later.",
+            "status": "error",
+            "error": str(e)
+        }
+
+@app.get("/chat/health")
+async def chat_health():
+    """Health check for chat service"""
+    return {
+        "status": "healthy",
+        "service": "chat_agent",
+        "timestamp": datetime.now().isoformat()
+    }
+
+@app.get("/chat/documents")
+async def list_available_documents():
+    """List all available documents in the GCS bucket"""
+    try:
+        policy_files = gcs_manager.list_files_in_folder("policies/")
+        benefit_files = gcs_manager.list_files_in_folder("benefits/")
+        
+        documents = {
+            "policies": [f.split('/')[-1] for f in policy_files if f.endswith('.pdf')],
+            "benefits": [f.split('/')[-1] for f in benefit_files if f.endswith('.pdf')],
+            "total_count": len([f for f in policy_files if f.endswith('.pdf')]) + len([f for f in benefit_files if f.endswith('.pdf')])
+        }
+        
+        return {
+            "documents": documents,
+            "status": "success"
+        }
+    except Exception as e:
+        return {
+            "error": str(e),
+            "status": "error"
+        }
+
 @app.get("/health")
 async def health_check():
     """Health check endpoint."""
@@ -234,7 +300,8 @@ async def health_check():
         "agents": {
             "welcome_agent": {"status": "healthy", "agent_type": "welcome"},
             "benefit_agent": {"status": "healthy", "agent_type": "benefit"},
-            "policy_agent": {"status": "healthy", "agent_type": "policy"}
+            "policy_agent": {"status": "healthy", "agent_type": "policy"},
+            "chat_agent": {"status": "healthy", "agent_type": "chat"}
         },
         "version": "1.0.0"
     }
@@ -251,12 +318,15 @@ async def root():
             "/onboard - Complete onboarding process",
             "/benefit/fetch - Fetch benefits",
             "/policy/fetch - Fetch policies",
+            "/chat - Chat with HR assistant",
+            "/chat/health - Chat service health check",
             "/docs - API documentation"
         ],
         "agents": {
             "welcome_agent": "✅ Active",
             "benefit_agent": "✅ Active",
-            "policy_agent": "✅ Active"
+            "policy_agent": "✅ Active",
+            "chat_agent": "✅ Active"
         }
     }
 
