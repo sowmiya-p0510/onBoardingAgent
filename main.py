@@ -166,22 +166,6 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-@app.get("/health")
-async def health_check():
-    """Health check endpoint."""
-    return {
-        "status": "healthy",
-        "message": "All agents operational",
-        "agents": {
-            "welcome_agent": {"status": "healthy", "agent_type": "welcome"},
-            "benefit_agent": {"status": "healthy", "agent_type": "benefit"},
-            "policy_agent": {"status": "healthy", "agent_type": "policy"},
-            "expense_agent": {"status": "healthy", "agent_type": "expense"},
-            "chat_agent": {"status": "healthy", "agent_type": "chat"}
-        },
-        "version": "1.0.0"
-    }
-
 @app.post("/chat")
 async def chat_with_agent(req: ChatRequest):
     """Chat endpoint for policy and benefits questions"""
@@ -238,111 +222,6 @@ async def root():
             "chat_agent": "✅ Active"
         }
     }
-
-@app.post("/onboard", response_model=OnboardingResponse)
-async def onboard_employee(req: OnboardingRequest):
-    """
-    Complete onboarding process using multiple agents
-
-    This endpoint orchestrates agents to provide a comprehensive onboarding experience:
-    1. Welcome Agent: Creates personalized welcome message and guidance
-    2. Benefits Agent: Fetches and summarizes benefit documents
-    3. Policy Agent: Fetches and summarizes policy documents
-    4. Expense Agent: Fetches and summarizes expense documents
-    """
-    try:
-        # Get detailed welcome info from Welcome Agent
-        supabase = get_supabase_client()
-        welcome_request = WelcomeRequest(email=req.email)
-        welcome_response = welcome_agent.process_request(welcome_request, supabase_client=supabase)
-
-        # Get benefits information
-        benefits_summary = "Benefits information will be provided by HR during your first week."
-        try:
-            benefit_request = BenefitFetchRequest(role=req.role, email=req.email)
-            benefits_response = benefit_agent.process_request(
-                benefit_request,
-                supabase_client=supabase,
-                get_signed_url=gcs_manager.get_signed_url,
-                list_files_in_folder=gcs_manager.list_files_in_folder,
-                check_file_exists=gcs_manager.check_file_exists
-            )
-            if benefits_response.success:
-                benefits_summary = benefits_response.overall_summary
-        except Exception as e:
-            print(f"Benefits processing error: {e}")
-
-        # Get policy information
-        policy_summary = "Company policies will be provided during your orientation."
-        try:
-            policy_request = PolicyFetchRequest(role=req.role, email=req.email)
-            policy_response = policy_agent.process_request(
-                policy_request,
-                supabase_client=supabase,
-                get_signed_url=gcs_manager.get_signed_url,
-                list_files_in_folder=gcs_manager.list_files_in_folder,
-                check_file_exists=gcs_manager.check_file_exists
-            )
-            if policy_response.success:
-                policy_summary = policy_response.overall_summary
-        except Exception as e:
-            print(f"Policy processing error: {e}")
-
-        # Get expense information
-        expense_summary = "Expense policies and procedures will be provided during your orientation."
-        try:
-            expense_request = ExpenseFetchRequest(role=req.role, email=req.email)
-            expense_response = expense_agent.process_request(
-                expense_request,
-                supabase_client=supabase,
-                get_signed_url=gcs_manager.get_signed_url,
-                list_files_in_folder=gcs_manager.list_files_in_folder,
-                check_file_exists=gcs_manager.check_file_exists
-            )
-            if expense_response.success:
-                expense_summary = expense_response.overall_summary
-        except Exception as e:
-            print(f"Expense processing error: {e}")
-
-        # Create default response if welcome agent fails
-        default_welcome = f"Welcome {req.name}! We're excited to have you join our {req.team} team as our new {req.role}."
-
-        # Prepare response using welcome agent data or defaults
-        if welcome_response.success and welcome_response.welcome_message:
-            welcome_message = welcome_response.welcome_message
-        else:
-            welcome_message = default_welcome
-
-        # Extract user profile if available
-        user_profile = welcome_response.user_profile if welcome_response.success else None
-
-        # Create next steps and team contacts
-        next_steps = [
-            f"Contact your manager {user_profile.manager_name if user_profile else req.manager} for guidance",
-            "Complete employee documentation",
-            "Review company policies",
-            "Set up your expense management account"
-        ]
-
-        team_contacts = {
-            "manager": user_profile.manager_name if user_profile else req.manager,
-            "manager_email": user_profile.manager_email if user_profile else "",
-            "department": user_profile.department if user_profile else req.team
-        }
-
-        return OnboardingResponse(
-            success=True,
-            welcome_message=welcome_message,
-            benefits_summary=benefits_summary,
-            policy_summary=policy_summary,
-            expense_summary=expense_summary,
-            next_steps=next_steps,
-            documents=["Employee Handbook", "Company Policies", "Expense Guidelines"],
-            team_contacts=team_contacts
-        )
-
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Error processing onboarding: {str(e)}")
 
 @app.post("/welcome/fetch", response_model=WelcomeResponse)
 async def generate_welcome(req: WelcomeRequest):
@@ -401,15 +280,6 @@ async def fetch_expenses(req: ExpenseFetchRequest):
         return response
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error fetching expense documents: {str(e)}")
-
-@app.get("/chat/health")
-async def chat_health():
-    """Health check for chat service"""
-    return {
-        "status": "healthy",
-        "service": "chat_agent",
-        "timestamp": datetime.now().isoformat()
-    }
 
 @app.get("/chat/documents")
 async def list_available_documents():
