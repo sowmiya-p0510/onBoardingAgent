@@ -45,7 +45,7 @@ The Onboarding Agent System is a sophisticated platform designed to streamline t
 
 The system comprises three specialized agents:
 
-1. **Policy Agent**: Retrieves and processes company policy documents relevant to an employee's role
+1. **Onboarding Agent**: Retrieves and processes company onboarding documents relevant to an employee's role
 2. **Benefit Agent**: Provides information about benefits available to employees based on their position
 3. **Expense Agent**: Delivers expense policies, procedures, and guidelines specific to each role
 
@@ -80,18 +80,19 @@ The system is designed to be integrated into a larger onboarding platform, with 
 
 ```python
 from agents.expense_agent import ExpenseAgent, ExpenseFetchRequest
+from agents.onboarding_agent import OnboardingAgent, OnboardingFetchRequest
 from your_supabase_client import supabase_client
 from your_storage_utils import get_signed_url, list_files_in_folder, check_file_exists
 
-# Initialize the expense agent
-expense_agent = ExpenseAgent(agent=None)
+# Initialize the onboarding agent
+onboarding_agent = OnboardingAgent(agent=None)
 
 # Create a request for a specific role
-request = ExpenseFetchRequest(role="manager", email="new.manager@company.com")
+onboarding_request = OnboardingFetchRequest(role="manager", email="new.manager@company.com")
 
 # Process the request
-response = expense_agent.process_request(
-    req=request,
+onboarding_response = onboarding_agent.process_request(
+    req=onboarding_request,
     supabase_client=supabase_client,
     get_signed_url=get_signed_url,
     list_files_in_folder=list_files_in_folder,
@@ -99,14 +100,14 @@ response = expense_agent.process_request(
 )
 
 # Handle the response
-if response.success:
-    print(f"Found {len(response.documents)} expense documents")
-    for doc in response.documents:
+if onboarding_response.success:
+    print(f"Found {len(onboarding_response.documents)} onboarding documents")
+    for doc in onboarding_response.documents:
         print(f"Document: {doc.title}")
         print(f"Access URL: {doc.url}")
-        print(f"Summary: {doc.summary}")
+        print(f"Acknowledged: {doc.acknowledged}")
 else:
-    print(f"Error: {response.message}")
+    print(f"Error: {onboarding_response.message}")
 ```
 
 ## Database Schema
@@ -116,10 +117,10 @@ else:
 #### agents Table
 - `id`: Unique identifier
 - `role`: Employee role (e.g., manager, developer)
-- `agent_type`: Type of agent (policy, benefit, expense)
+- `agent_type`: Type of agent (onboarding, benefit, expense)
 - `documents`: JSON array containing document metadata:
   - `doc_title`: Document title
-  - `gcs_url`: Google Cloud Storage folder path
+  - `gcs_url`: Storage folder path
   - `description`: Document description
   - `summary`: Pre-generated document summary
   - `pdf_name`: Filename of the document

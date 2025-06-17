@@ -12,36 +12,19 @@ import datetime
 from contextlib import asynccontextmanager
 
 # Import our agents
+from agents.policy_agent import PolicyAgent, PolicyFetchRequest, PolicyFetchResponse
 from agents.benefit_agent import BenefitAgent, BenefitFetchRequest, BenefitFetchResponse
 from agents.policy_agent import PolicyAgent, PolicyFetchRequest, PolicyFetchResponse
 from agents.expense_agent import ExpenseAgent, ExpenseFetchRequest, ExpenseFetchResponse
-from agents.welcome_agent import WelcomeAgent, WelcomeRequest, WelcomeResponse, UserProfile
+from agents.welcome_agent import WelcomeAgent, WelcomeRequest, WelcomeResponse
 from agents.startup_vector_agent import StartupVectorChatAgent
+from agents.onboarding_agent import OnboardingAgent, OnboardingFetchResponse, OnboardingFetchRequest
 
 # Import GCS utilities
 from utils.gcs_utils import GCSManager
 
 # Load environment variables
 load_dotenv()
-
-# Pydantic models for input
-class OnboardingRequest(BaseModel):
-    name: str
-    role: str
-    start_date: str
-    email: str
-    team: str
-    manager: str
-
-class OnboardingResponse(BaseModel):
-    success: bool
-    welcome_message: str
-    benefits_summary: str = None
-    policy_summary: str = None
-    expense_summary: str = None
-    next_steps: list
-    documents: list
-    team_contacts: dict
 
 class ChatRequest(BaseModel):
     email: str
@@ -55,6 +38,7 @@ class DocumentAcknowledgmentRequest(BaseModel):
 class DocumentAcknowledgmentResponse(BaseModel):
     success: bool
     message: str
+    acknowledged: bool = False
     acknowledgment_id: Optional[str] = None
     timestamp: Optional[str] = None
 
@@ -116,6 +100,18 @@ expense_specialist = Agent(
     verbose=True
 )
 
+onboarding_specialist = Agent(
+    role='Onboarding Specialist',
+    goal='Guide new employees through their onboarding process effectively',
+    backstory="""You are an expert onboarding specialist who helps new employees navigate 
+    their first days and weeks at the company. You excel at breaking down complex onboarding 
+    processes into clear, manageable steps. You understand the importance of a smooth transition 
+    and focus on providing practical guidance and support. You're particularly skilled at 
+    customizing the onboarding experience based on role and department.""",
+    llm=llm,
+    verbose=True
+)
+
 # Initialize helpers
 gcs_manager = GCSManager()
 
@@ -129,6 +125,7 @@ def get_supabase_client() -> Client:
 welcome_agent = WelcomeAgent(agent=hr_agent)
 benefit_agent = BenefitAgent(agent=benefit_specialist)
 policy_agent = PolicyAgent(agent=policy_specialist)
+onboarding_agent = OnboardingAgent(agent=onboarding_specialist)
 expense_agent = ExpenseAgent(agent=expense_specialist)
 chat_agent = StartupVectorChatAgent()
 
@@ -200,14 +197,12 @@ async def root():
         "message": "AI Onboarding System - Multiple Agents",
         "status": "running",
         "available_endpoints": [
-            "/health - Health check",
             "/welcome/fetch - Generate welcome message",
-            "/onboard - Complete onboarding process",
             "/benefit/fetch - Fetch benefits",
             "/policy/fetch - Fetch policies",
             "/expense/fetch - Fetch expense policies",
+            "/onboard/agent - Fetch onboarding task details",
             "/chat - Chat with HR assistant",
-            "/chat/health - Chat service health check",
             "/chat/documents - List available documents",
             "/document/acknowledge - Record document acknowledgment",
             "/document/acknowledgments/{email} - Get user acknowledgments",
@@ -219,6 +214,7 @@ async def root():
             "benefit_agent": "✅ Active",
             "policy_agent": "✅ Active",
             "expense_agent": "✅ Active",
+            "onboarding_agent": "✅ Active",  # Updated to include onboarding agent
             "chat_agent": "✅ Active"
         }
     }
@@ -264,6 +260,23 @@ async def fetch_policies(req: PolicyFetchRequest):
         return response
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error fetching policies: {str(e)}")
+
+# Add the new onboarding tasks endpoint
+@app.post("/onboard/fetch", response_model= OnboardingFetchResponse)
+async def get_onboarding_tasks(req: OnboardingFetchRequest):
+    """Fetch personalized onboarding task information for a new employee."""
+    try:
+        supabase = get_supabase_client()
+        response = onboarding_agent.process_request(
+            req,
+            supabase_client=supabase,
+            get_signed_url=gcs_manager.get_signed_url,
+            list_files_in_folder=gcs_manager.list_files_in_folder,
+            check_file_exists=gcs_manager.check_file_exists
+        )
+        return response
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error getting onboarding tasks: {str(e)}")
 
 @app.post("/expense/fetch", response_model=ExpenseFetchResponse)
 async def fetch_expenses(req: ExpenseFetchRequest):
@@ -326,7 +339,8 @@ async def acknowledge_document(req: DocumentAcknowledgmentRequest):
             "email": req.email,
             "document_name": req.document_name,
             "acknowledged_at": datetime.datetime.now().isoformat(),
-            "created_at": datetime.datetime.now().isoformat()
+            "created_at": datetime.datetime.now().isoformat(),
+            "acknowledged":req.acknowledged
         }
         
         # Insert into the document_acknowledgments table
