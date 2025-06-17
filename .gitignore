@@ -30,6 +30,61 @@ wheels/
 .installed.cfg
 *.egg
 
+# ChromaDB and Vector Store Data (DO NOT COMMIT)
+chroma_db/
+*.chroma
+vector_store/
+embeddings/
+*.pkl
+*.pickle
+
+# Document Cache
+document_cache/
+*.cache
+
+# Logs
+*.log
+logs/
+*.out
+
+# Temporary files
+tmp/
+temp/
+*.tmp
+*.temp
+
+# Test files
+test_*.py
+*_test.py
+tests/
+pytest_cache/
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Database files
+*.db
+*.sqlite
+*.sqlite3
+
+# Virtual environments
+venv/
+env/
+ENV/
+.venv/
+.ENV/
+
+# IDE files
+.idea/
+*.swp
+*.swo
+*~
+
+# Backup files
+*.bak
+*.backup
+*.old
+
 # OS specific files
 .DS_Store
 Thumbs.db

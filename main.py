@@ -7,13 +7,14 @@ import os
 from datetime import datetime
 from typing import Optional
 from supabase import create_client, Client
+from fastapi.middleware.cors import CORSMiddleware
 
 # Import our agents
 from agents.benefit_agent import BenefitAgent, BenefitFetchRequest, BenefitFetchResponse
 from agents.policy_agent import PolicyAgent, PolicyFetchRequest, PolicyFetchResponse
-from agents.expense_agent import ExpenseAgent, ExpenseFetchRequest, ExpenseFetchResponse  # New import
+from agents.expense_agent import ExpenseAgent, ExpenseFetchRequest, ExpenseFetchResponse
 from agents.welcome_agent import WelcomeAgent, WelcomeRequest, WelcomeResponse, UserProfile
-from agents.chat_agent import ChatAgent
+from agents.startup_vector_agent import StartupVectorChatAgent
 
 # Import GCS utilities
 from utils.gcs_utils import GCSManager
@@ -38,15 +39,22 @@ class OnboardingResponse(BaseModel):
     welcome_message: str
     benefits_summary: str = None
     policy_summary: str = None
-    expense_summary: str = None  # New field for expense summary
+    expense_summary: str = None
     next_steps: list
     documents: list
     team_contacts: dict
 
 class ChatRequest(BaseModel):
-    user_id: str
+    email: str
     question: str
-    session_id: Optional[str] = None
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],  # or specify your frontend origin like ["http://localhost:3000"]
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 # Create the LLM
 llm = ChatOpenAI(model_name="gpt-4", temperature=0.5)
@@ -92,7 +100,6 @@ policy_specialist = Agent(
     verbose=True
 )
 
-# New expense specialist agent
 expense_specialist = Agent(
     role='Expense Management Specialist',
     goal='Help employees understand and navigate expense policies and procedures',
@@ -120,8 +127,91 @@ def get_supabase_client() -> Client:
 welcome_agent = WelcomeAgent(agent=hr_agent)
 benefit_agent = BenefitAgent(agent=benefit_specialist)
 policy_agent = PolicyAgent(agent=policy_specialist)
-expense_agent = ExpenseAgent(agent=expense_specialist)  # Initialize the new expense agent
-chat_agent = ChatAgent()
+expense_agent = ExpenseAgent(agent=expense_specialist)
+chat_agent = StartupVectorChatAgent()
+
+@app.on_event("startup")
+async def startup_event():
+    """Preload vector store when server starts"""
+    print("🚀 Server starting - initializing chat agent...")
+    
+    # Set GCS functions for the chat agent
+    chat_agent.set_gcs_functions(
+        gcs_manager.list_files_in_folder,
+        gcs_manager.get_signed_url,
+        gcs_manager.check_file_exists
+    )
+    
+    # Start background preloading
+    preload_thread = chat_agent.preload_vector_store_background()
+    print("📋 Vector store preloading started in background...")
+    print("🎯 Server ready! Vector store will be available shortly.")
+
+@app.get("/health")
+async def health_check():
+    """Health check endpoint."""
+    return {
+        "status": "healthy",
+        "message": "All agents operational",
+        "agents": {
+            "welcome_agent": {"status": "healthy", "agent_type": "welcome"},
+            "benefit_agent": {"status": "healthy", "agent_type": "benefit"},
+            "policy_agent": {"status": "healthy", "agent_type": "policy"},
+            "expense_agent": {"status": "healthy", "agent_type": "expense"},
+            "chat_agent": {"status": "healthy", "agent_type": "chat"}
+        },
+        "version": "1.0.0"
+    }
+
+@app.post("/chat")
+async def chat_with_agent(req: ChatRequest):
+    """Chat endpoint for policy and benefits questions"""
+    try:
+        response = chat_agent.process_chat_request(
+            question=req.question,
+            list_files_in_folder=gcs_manager.list_files_in_folder,
+            get_signed_url=gcs_manager.get_signed_url,
+            check_file_exists=gcs_manager.check_file_exists
+        )
+
+        return {
+            "response": response,
+            "status": "success",
+            "email": req.email
+        }
+
+    except Exception as e:
+        return {
+            "response": "I'm sorry, I encountered an error while processing your request. Please try again later.",
+            "status": "error",
+            "error": str(e)
+        }
+
+@app.get("/")
+async def root():
+    """Root endpoint with basic info"""
+    return {
+        "message": "AI Onboarding System - Multiple Agents",
+        "status": "running",
+        "available_endpoints": [
+            "/health - Health check",
+            "/welcome/fetch - Generate welcome message",
+            "/onboard - Complete onboarding process",
+            "/benefit/fetch - Fetch benefits",
+            "/policy/fetch - Fetch policies",
+            "/expense/fetch - Fetch expense policies",
+            "/chat - Chat with HR assistant",
+            "/chat/health - Chat service health check",
+            "/docs - API documentation"
+        ],
+        "agents": {
+            "welcome_agent": "✅ Active",
+            "benefit_agent": "✅ Active",
+            "policy_agent": "✅ Active",
+            "expense_agent": "✅ Active",
+            "chat_agent": "✅ Active"
+        }
+    }
 
 @app.post("/onboard", response_model=OnboardingResponse)
 async def onboard_employee(req: OnboardingRequest):
@@ -172,7 +262,7 @@ async def onboard_employee(req: OnboardingRequest):
         except Exception as e:
             print(f"Policy processing error: {e}")
 
-        # Get expense information - new section
+        # Get expense information
         expense_summary = "Expense policies and procedures will be provided during your orientation."
         try:
             expense_request = ExpenseFetchRequest(role=req.role, email=req.email)
@@ -205,7 +295,7 @@ async def onboard_employee(req: OnboardingRequest):
             f"Contact your manager {user_profile.manager_name if user_profile else req.manager} for guidance",
             "Complete employee documentation",
             "Review company policies",
-            "Set up your expense management account"  # New next step
+            "Set up your expense management account"
         ]
 
         team_contacts = {
@@ -219,9 +309,9 @@ async def onboard_employee(req: OnboardingRequest):
             welcome_message=welcome_message,
             benefits_summary=benefits_summary,
             policy_summary=policy_summary,
-            expense_summary=expense_summary,  # Include expense summary in response
+            expense_summary=expense_summary,
             next_steps=next_steps,
-            documents=["Employee Handbook", "Company Policies", "Expense Guidelines"],  # Updated documents list
+            documents=["Employee Handbook", "Company Policies", "Expense Guidelines"],
             team_contacts=team_contacts
         )
 
@@ -270,7 +360,6 @@ async def fetch_policies(req: PolicyFetchRequest):
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error fetching policies: {str(e)}")
 
-# New endpoint for expense documents
 @app.post("/expense/fetch", response_model=ExpenseFetchResponse)
 async def fetch_expenses(req: ExpenseFetchRequest):
     """Fetch and summarize expense documents for an employee."""
@@ -287,31 +376,6 @@ async def fetch_expenses(req: ExpenseFetchRequest):
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error fetching expense documents: {str(e)}")
 
-@app.post("/chat")
-async def chat_with_agent(req: ChatRequest):
-    """Chat endpoint for policy and benefits questions"""
-    try:
-        response = chat_agent.process_chat_request(
-            question=req.question,
-            list_files_in_folder=gcs_manager.list_files_in_folder,
-            get_signed_url=gcs_manager.get_signed_url,
-            check_file_exists=gcs_manager.check_file_exists
-        )
-
-        return {
-            "response": response,
-            "status": "success",
-            "user_id": req.user_id,
-            "session_id": req.session_id
-        }
-
-    except Exception as e:
-        return {
-            "response": "I'm sorry, I encountered an error while processing your request. Please try again later.",
-            "status": "error",
-            "error": str(e)
-        }
-
 @app.get("/chat/health")
 async def chat_health():
     """Health check for chat service"""
@@ -327,15 +391,15 @@ async def list_available_documents():
     try:
         policy_files = gcs_manager.list_files_in_folder("policies/")
         benefit_files = gcs_manager.list_files_in_folder("benefits/")
-        expense_files = gcs_manager.list_files_in_folder("expenses/")  # New line to list expense files
+        expense_files = gcs_manager.list_files_in_folder("expenses/")
 
         documents = {
             "policies": [f.split('/')[-1] for f in policy_files if f.endswith('.pdf')],
             "benefits": [f.split('/')[-1] for f in benefit_files if f.endswith('.pdf')],
-            "expenses": [f.split('/')[-1] for f in expense_files if f.endswith('.pdf')],  # New entry for expenses
+            "expenses": [f.split('/')[-1] for f in expense_files if f.endswith('.pdf')],
             "total_count": len([f for f in policy_files if f.endswith('.pdf')]) + 
                           len([f for f in benefit_files if f.endswith('.pdf')]) +
-                          len([f for f in expense_files if f.endswith('.pdf')])  # Updated count
+                          len([f for f in expense_files if f.endswith('.pdf')])
         }
 
         return {
@@ -348,52 +412,10 @@ async def list_available_documents():
             "status": "error"
         }
 
-@app.get("/health")
-async def health_check():
-    """Health check endpoint."""
-    return {
-        "status": "healthy",
-        "message": "All agents operational",
-        "agents": {
-            "welcome_agent": {"status": "healthy", "agent_type": "welcome"},
-            "benefit_agent": {"status": "healthy", "agent_type": "benefit"},
-            "policy_agent": {"status": "healthy", "agent_type": "policy"},
-            "expense_agent": {"status": "healthy", "agent_type": "expense"},  # New agent status
-            "chat_agent": {"status": "healthy", "agent_type": "chat"}
-        },
-        "version": "1.0.0"
-    }
-
-@app.get("/")
-async def root():
-    """Root endpoint with basic info"""
-    return {
-        "message": "AI Onboarding System - Multiple Agents",
-        "status": "running",
-        "available_endpoints": [
-            "/health - Health check",
-            "/welcome - Generate welcome message",
-            "/onboard - Complete onboarding process",
-            "/benefit/fetch - Fetch benefits",
-            "/policy/fetch - Fetch policies",
-            "/expense/fetch - Fetch expense policies",  # New endpoint
-            "/chat - Chat with HR assistant",
-            "/chat/health - Chat service health check",
-            "/docs - API documentation"
-        ],
-        "agents": {
-            "welcome_agent": "✅ Active",
-            "benefit_agent": "✅ Active",
-            "policy_agent": "✅ Active",
-            "expense_agent": "✅ Active",  # New agent status
-            "chat_agent": "✅ Active"
-        }
-    }
-
 if __name__ == "__main__":
     import uvicorn
     print("🚀 Starting AI Onboarding System...")
-    print("📍 Server will be available at: http://localhost:8000")
-    print("📚 API documentation at: http://localhost:8000/docs")
+    print("📍 Server will be available at: http://localhost:4001")
+    print("📚 API documentation at: http://localhost:4001/docs")
     print("🎯 All agents active!")
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+    uvicorn.run(app, host="0.0.0.0", port=4001)
