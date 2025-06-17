@@ -1,6 +1,5 @@
 from typing import Optional
 from pydantic import BaseModel
-from crewai import Task, Crew
 import datetime
 
 # --- Models ---
@@ -30,14 +29,14 @@ class WelcomeResponse(BaseModel):
 # --- Welcome Agent ---
 
 class WelcomeAgent:
-    def __init__(self, agent):
+    def __init__(self, agent=None):
         """
-        Initialize the WelcomeAgent with a pre-defined agent.
+        Initialize the WelcomeAgent.
 
         Args:
-            agent: A CrewAI Agent instance to use for processing
+            agent: Parameter kept for compatibility but not used
         """
-        self.agent = agent
+        pass
 
     def get_user_profile(self, email: str, supabase_client):
         """Get user profile data from Supabase."""
@@ -67,7 +66,7 @@ class WelcomeAgent:
                     message=f"No user profile found for email: {req.email}"
                 )
 
-            # Generate welcome message
+            # Generate static welcome message
             welcome_message = self._generate_welcome_message(user_profile)
 
             return WelcomeResponse(
@@ -84,7 +83,7 @@ class WelcomeAgent:
             )
 
     def _generate_welcome_message(self, user_profile: UserProfile) -> str:
-        """Generate a personalized welcome message for the user."""
+        """Generate a personalized welcome message using a template."""
         # Format joining date for better readability
         try:
             joining_date = datetime.datetime.strptime(user_profile.joining_date, "%Y-%m-%d")
@@ -92,53 +91,20 @@ class WelcomeAgent:
         except:
             formatted_joining_date = user_profile.joining_date
 
-        welcome_task = Task(
-            description=f"""
-            Create a warm, personalized welcome message for a new employee with the following details:
+        # Extract first name for more personalized closing
+        first_name = user_profile.full_name.split()[0] if user_profile.full_name else "there"
 
-            Full Name: {user_profile.full_name}
-            Role: {user_profile.role}
-            Department: {user_profile.department}
-            Manager: {user_profile.manager_name}
-            Joining Date: {formatted_joining_date}
-            Location: {user_profile.location}
-            Employment Type: {user_profile.employment_type}
+        # Template-based welcome message
+        welcome_message = f"""Dear {user_profile.full_name},
 
-            The welcome message should:
-            1. Greet the employee by name
-            2. Welcome them to the company and mention their specific role and department
-            3. Express enthusiasm about their joining
-            4. Mention their manager by name and encourage reaching out for support
-            5. Reference their joining date and location
-            6. End with a positive note about looking forward to their contributions
+We are thrilled to welcome you to our team as a {user_profile.employment_type} {user_profile.role} in the {user_profile.department} Department. It's an exciting time for us, and we're delighted that someone with your skills and enthusiasm is joining our team. We believe that with your abilities, we will reach new heights.
 
-            IMPORTANT FORMATTING INSTRUCTIONS:
-            - DO NOT include any signature, sign-off, or closing line like "Best regards," "Sincerely," etc.
-            - DO NOT include any placeholders like "[Your Name]" or "[Your Position]"
-            - End the message directly after the final paragraph with no additional text
+Starting a new job can be overwhelming, but remember, we are all here to support you. Your manager, {user_profile.manager_name}, is looking forward to working with you and is available to assist you in any way possible. Don't hesitate to reach out to him or any of your new colleagues if you have questions or need any help settling in.
 
-            The tone should be professional, warm, enthusiastic, and human-like.
-            DO NOT include any references to AI, automation, or this being a generated message.
-            Write as if you are a human HR representative or team leader genuinely welcoming a new colleague.
+We are eagerly awaiting your arrival on {formatted_joining_date}, at our {user_profile.location} location. We have planned a comprehensive onboarding process for you to ensure a smooth transition into your new role. This will help you understand our work culture, the projects you'll be working on, and how you can contribute to our shared goals.
 
-            The message should be 4-6 paragraphs long and feel sincere and personalized.
-            """,
-            expected_output="A warm, professional, and personalized welcome message with no signature or placeholders",
-            agent=self.agent
-        )
+We are confident that you will make significant contributions to our ongoing projects and future initiatives. We believe in your ability to bring fresh ideas and perspectives to our team, and we look forward to seeing your passion in action.
 
-        # Create the Crew for welcome message
-        crew = Crew(
-            agents=[self.agent],
-            tasks=[welcome_task],
-            verbose=False
-        )
-
-        # Run the crew and convert output to string
-        crew_result = crew.kickoff()
-        if hasattr(crew_result, 'raw'):
-            welcome_message = str(crew_result.raw)
-        else:
-            welcome_message = str(crew_result)
+Once again, welcome aboard, {first_name}. We can't wait to start this exciting journey with you."""
 
         return welcome_message
