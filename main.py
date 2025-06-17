@@ -47,6 +47,17 @@ class ChatRequest(BaseModel):
     email: str
     question: str
 
+# New models for document acknowledgment
+class DocumentAcknowledgmentRequest(BaseModel):
+    email: str
+    document_name: str
+
+class DocumentAcknowledgmentResponse(BaseModel):
+    success: bool
+    message: str
+    acknowledgment_id: Optional[str] = None
+    timestamp: Optional[str] = None
+
 # Create the LLM
 llm = ChatOpenAI(model_name="gpt-4", temperature=0.5)
 
@@ -155,8 +166,6 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# ...existing code...
-
 @app.get("/health")
 async def health_check():
     """Health check endpoint."""
@@ -177,11 +186,14 @@ async def health_check():
 async def chat_with_agent(req: ChatRequest):
     """Chat endpoint for policy and benefits questions"""
     try:
+        supabase = get_supabase_client()
         response = chat_agent.process_chat_request(
             question=req.question,
+            email=req.email,
             list_files_in_folder=gcs_manager.list_files_in_folder,
             get_signed_url=gcs_manager.get_signed_url,
-            check_file_exists=gcs_manager.check_file_exists
+            check_file_exists=gcs_manager.check_file_exists,
+            supabase_client=supabase
         )
 
         return {
@@ -212,6 +224,10 @@ async def root():
             "/expense/fetch - Fetch expense policies",
             "/chat - Chat with HR assistant",
             "/chat/health - Chat service health check",
+            "/chat/documents - List available documents",
+            "/document/acknowledge - Record document acknowledgment",
+            "/document/acknowledgments/{email} - Get user acknowledgments",
+            "/document/acknowledgments - Get all acknowledgments",
             "/docs - API documentation"
         ],
         "agents": {
@@ -421,6 +437,109 @@ async def list_available_documents():
             "error": str(e),
             "status": "error"
         }
+
+@app.post("/document/acknowledge", response_model=DocumentAcknowledgmentResponse)
+async def acknowledge_document(req: DocumentAcknowledgmentRequest):
+    """
+    Record that a user has acknowledged reading a document.
+    
+    This endpoint stores the acknowledgment in Supabase with:
+    - User email
+    - Document name
+    - Timestamp
+    """
+    try:
+        supabase = get_supabase_client()
+        
+        # Prepare the acknowledgment data
+        acknowledgment_data = {
+            "email": req.email,
+            "document_name": req.document_name,
+            "acknowledged_at": datetime.datetime.now().isoformat(),
+            "created_at": datetime.datetime.now().isoformat()
+        }
+        
+        # Insert into the document_acknowledgments table
+        response = supabase.table("document_acknowledgments").insert(acknowledgment_data).execute()
+        
+        if response.data:
+            acknowledgment_id = response.data[0].get("id") if response.data[0] else None
+            return DocumentAcknowledgmentResponse(
+                success=True,
+                message=f"Document '{req.document_name}' acknowledgment recorded successfully",
+                acknowledgment_id=str(acknowledgment_id) if acknowledgment_id else None,
+                timestamp=acknowledgment_data["acknowledged_at"]
+            )
+        else:
+            raise HTTPException(
+                status_code=500, 
+                detail="Failed to record document acknowledgment"
+            )
+            
+    except Exception as e:
+        print(f"Error recording document acknowledgment: {e}")
+        raise HTTPException(
+            status_code=500, 
+            detail=f"Error recording document acknowledgment: {str(e)}"
+        )
+
+@app.get("/document/acknowledgments/{email}")
+async def get_user_acknowledgments(email: str):
+    """
+    Get all document acknowledgments for a specific user.
+    
+    Returns list of documents the user has acknowledged reading.
+    """
+    try:
+        supabase = get_supabase_client()
+        
+        response = supabase.table("document_acknowledgments") \
+            .select("*") \
+            .eq("email", email) \
+            .order("acknowledged_at", desc=True) \
+            .execute()
+        
+        return {
+            "success": True,
+            "email": email,
+            "acknowledgments": response.data,
+            "total_count": len(response.data) if response.data else 0
+        }
+        
+    except Exception as e:
+        print(f"Error fetching acknowledgments: {e}")
+        raise HTTPException(
+            status_code=500, 
+            detail=f"Error fetching acknowledgments: {str(e)}"
+        )
+
+@app.get("/document/acknowledgments")
+async def get_all_acknowledgments():
+    """
+    Get all document acknowledgments (admin endpoint).
+    
+    Returns all acknowledgments in the system.
+    """
+    try:
+        supabase = get_supabase_client()
+        
+        response = supabase.table("document_acknowledgments") \
+            .select("*") \
+            .order("acknowledged_at", desc=True) \
+            .execute()
+        
+        return {
+            "success": True,
+            "acknowledgments": response.data,
+            "total_count": len(response.data) if response.data else 0
+        }
+        
+    except Exception as e:
+        print(f"Error fetching all acknowledgments: {e}")
+        raise HTTPException(
+            status_code=500, 
+            detail=f"Error fetching all acknowledgments: {str(e)}"
+        )
 
 if __name__ == "__main__":
     import uvicorn

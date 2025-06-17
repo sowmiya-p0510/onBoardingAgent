@@ -28,6 +28,9 @@ class StartupVectorChatAgent:
         self._get_signed_url = None
         self._check_file_exists = None
         
+        # Track user sessions for personalized greetings
+        self.user_sessions = {}
+        
         print("✅ Agent initialized - ready for preloading")
     
     def set_gcs_functions(self, list_files_in_folder, get_signed_url, check_file_exists):
@@ -196,8 +199,7 @@ class StartupVectorChatAgent:
                     })
                     all_ids.append(f"{doc_name}_chunk_{i}")
                     chunk_id += 1
-            
-            # Add all chunks at once
+              # Add all chunks at once
             if all_chunks:
                 self.collection.add(
                     documents=all_chunks,
@@ -249,7 +251,7 @@ class StartupVectorChatAgent:
         try:
             results = self.collection.query(
                 query_texts=[question],
-                n_results=2,  # Only top 2 results for speed
+                n_results=3,  # Increased from 2 to 3 for better coverage
                 include=['documents', 'metadatas']
             )
             
@@ -266,11 +268,25 @@ class StartupVectorChatAgent:
             print(f"❌ Search error: {e}")
             return []
     
-    def process_chat_request(self, question: str, list_files_in_folder, get_signed_url, check_file_exists) -> str:
-        """Fast chat processing"""
+    def process_chat_request(self, question: str, email: str, list_files_in_folder, get_signed_url, check_file_exists, supabase_client=None) -> str:
+        """Fast chat processing with personalized greeting"""
         start_time = time.time()
         
         try:
+            # Check if this is the user's first message for personalized greeting
+            is_first_message = email not in self.user_sessions
+            
+            if is_first_message and supabase_client:
+                # Get user profile for personalized greeting
+                user_profile = self.get_user_profile(email, supabase_client)
+                welcome_message = self.generate_welcome_message(user_profile)
+                self.user_sessions[email] = True
+                
+                # If it's a simple greeting, return welcome message
+                greeting_words = ['hi', 'hello', 'hey', 'good morning', 'good afternoon', 'good evening']
+                if any(word in question.lower() for word in greeting_words) and len(question.split()) <= 3:
+                    return welcome_message
+            
             # Check if initialized, if not try quick initialization
             if not self.is_initialized:
                 with self.initialization_lock:
@@ -278,14 +294,39 @@ class StartupVectorChatAgent:
                         print("⚡ Quick vector store check...")
                         self.set_gcs_functions(list_files_in_folder, get_signed_url, check_file_exists)
                         if not self.initialize_vector_store_fast(list_files_in_folder, get_signed_url, check_file_exists):
-                            return "I'm sorry, I'm still initializing. Please try again in a moment."
+                            return "I'm currently initializing my knowledge base. Please try again in a moment, and I'll be ready to help you with your HR questions!"
                         self.is_initialized = True
             
             # Fast search
             relevant_content = self.search_relevant_content_fast(question)
             
             if not relevant_content:
-                return "I'm sorry, I couldn't find relevant information. Please contact HR directly."
+                # Instead of referring to HR, provide helpful automated response
+                fallback_responses = {
+                    'benefit': "I can help you with benefit-related questions! Try asking about health insurance, dental coverage, retirement plans, or vacation policies.",
+                    'policy': "I can assist with company policy questions! Ask me about dress code, remote work, time off, or code of conduct.",
+                    'expense': "I can help with expense-related queries! Try asking about expense limits, reimbursement processes, or travel policies.",
+                    'payroll': "For payroll questions, I can help with general information about pay schedules and deduction policies.",
+                    'default': "I'm here to help with questions about company policies, benefits, and procedures. Could you please rephrase your question or be more specific about what you'd like to know?"
+                }
+                
+                question_lower = question.lower()
+                for category in fallback_responses:
+                    if category in question_lower:
+                        response = fallback_responses[category]
+                        if is_first_message and supabase_client:
+                            user_profile = self.get_user_profile(email, supabase_client)
+                            welcome = self.generate_welcome_message(user_profile)
+                            return f"{welcome}\n\n{response}"
+                        return response
+                
+                # Default fallback
+                response = fallback_responses['default']
+                if is_first_message and supabase_client:
+                    user_profile = self.get_user_profile(email, supabase_client)
+                    welcome = self.generate_welcome_message(user_profile)
+                    return f"{welcome}\n\n{response}"
+                return response
             
             # Create minimal context
             context = ""
@@ -295,23 +336,67 @@ class StartupVectorChatAgent:
                 context += f"From {item['source']}: {content_preview}\n\n"
                 print(f"🎯 Using: {item['source']}")
             
-            # Simple direct LLM call instead of CrewAI for speed
-            prompt = f"""Based on this company information, answer the employee question concisely:
+            # Improved prompt for better automated responses
+            prompt = f"""You are an AI HR Assistant providing automated support. Based on the company information below, answer the employee question in a helpful and professional manner.
 
 Question: {question}
 
-Company Info:
+Company Information:
 {context}
 
-Answer in 2-3 sentences, be helpful and reference the source document."""
+Instructions:
+- Provide a clear, direct answer based on the company information
+- Be helpful and professional
+- Reference the source document when appropriate
+- Keep the response concise (2-4 sentences)
+- Act as an automated HR system, not as a human representative
+- Do not suggest contacting HR - you ARE the HR automation system
+
+Answer:"""
 
             response = self.llm.invoke(prompt)
+            
+            # Add welcome message for first-time users
+            final_response = response.content
+            if is_first_message and supabase_client:
+                user_profile = self.get_user_profile(email, supabase_client)
+                welcome = self.generate_welcome_message(user_profile)
+                final_response = f"{welcome}\n\n{response.content}"
             
             total_time = time.time() - start_time
             print(f"⚡ Response time: {total_time:.1f}s")
             
-            return response.content
+            return final_response
             
         except Exception as e:
             print(f"❌ Error: {e}")
-            return "I'm experiencing technical difficulties. Please try again later."
+            return "I'm experiencing technical difficulties. Please try again in a moment, and I'll do my best to help you with your HR questions."
+    
+    def get_user_profile(self, email: str, supabase_client):
+        """Get user profile for personalized greeting"""
+        try:
+            response = supabase_client.table("user_profiles") \
+                .select("full_name, role, department") \
+                .eq("email", email) \
+                .execute()
+            
+            if response.data and len(response.data) > 0:
+                return response.data[0]
+            return None
+        except Exception as e:
+            print(f"Error fetching user profile: {e}")
+            return None
+    
+    def generate_welcome_message(self, user_profile: Dict = None) -> str:
+        """Generate personalized welcome message"""
+        if user_profile and user_profile.get('full_name'):
+            name = user_profile['full_name'].split()[0]  # First name
+            role = user_profile.get('role', '')
+            dept = user_profile.get('department', '')
+            
+            if role and dept:
+                return f"Hello {name}! 👋 I'm your AI HR Assistant. As a {role} in {dept}, I'm here to help you with any questions about company policies, benefits, or procedures. What can I help you with today?"
+            else:
+                return f"Hello {name}! 👋 I'm your AI HR Assistant. I'm here to help you with any questions about company policies, benefits, or procedures. What can I help you with today?"
+        else:
+            return "Hello! 👋 I'm your AI HR Assistant. I'm here to help you with any questions about company policies, benefits, or procedures. What can I help you with today?"
