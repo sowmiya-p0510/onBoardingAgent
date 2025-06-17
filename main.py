@@ -4,16 +4,14 @@ from crewai import Agent
 from langchain_openai import ChatOpenAI
 from dotenv import load_dotenv
 import os
-from datetime import datetime
-from typing import Optional
 from supabase import create_client, Client
+from fastapi.middleware.cors import CORSMiddleware
 
 # Import our agents
 from agents.benefit_agent import BenefitAgent, BenefitFetchRequest, BenefitFetchResponse
 from agents.policy_agent import PolicyAgent, PolicyFetchRequest, PolicyFetchResponse
 # Import our new WelcomeAgent instead of SimpleWelcomeAgent
 from agents.welcome_agent import WelcomeAgent, WelcomeRequest, WelcomeResponse, UserProfile
-from agents.chat_agent import ChatAgent
 
 # Import GCS utilities
 from utils.gcs_utils import GCSManager
@@ -23,6 +21,15 @@ load_dotenv()
 
 # Initialize FastAPI app
 app = FastAPI(title="AI Onboarding System")
+
+# Configure CORS middleware
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],  # or specify your frontend origin like ["http://localhost:3000"]
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 # Pydantic models for input
 class OnboardingRequest(BaseModel):
@@ -41,11 +48,6 @@ class OnboardingResponse(BaseModel):
     next_steps: list
     documents: list
     team_contacts: dict
-
-class ChatRequest(BaseModel):
-    user_id: str
-    question: str
-    session_id: Optional[str] = None
 
 # Create the LLM
 llm = ChatOpenAI(model_name="gpt-4", temperature=0.5)
@@ -104,7 +106,6 @@ def get_supabase_client() -> Client:
 welcome_agent = WelcomeAgent(agent=hr_agent)  # Using our new WelcomeAgent
 benefit_agent = BenefitAgent(agent=benefit_specialist)
 policy_agent = PolicyAgent(agent=policy_specialist)
-chat_agent = ChatAgent()
 
 @app.post("/onboard", response_model=OnboardingResponse)
 async def onboard_employee(req: OnboardingRequest):
@@ -291,20 +292,6 @@ async def list_available_documents():
             "status": "error"
         }
 
-@app.get("/health")
-async def health_check():
-    """Health check endpoint."""
-    return {
-        "status": "healthy",
-        "message": "All agents operational",
-        "agents": {
-            "welcome_agent": {"status": "healthy", "agent_type": "welcome"},
-            "benefit_agent": {"status": "healthy", "agent_type": "benefit"},
-            "policy_agent": {"status": "healthy", "agent_type": "policy"},
-            "chat_agent": {"status": "healthy", "agent_type": "chat"}
-        },
-        "version": "1.0.0"
-    }
 
 @app.get("/")
 async def root():
@@ -318,15 +305,12 @@ async def root():
             "/onboard - Complete onboarding process",
             "/benefit/fetch - Fetch benefits",
             "/policy/fetch - Fetch policies",
-            "/chat - Chat with HR assistant",
-            "/chat/health - Chat service health check",
             "/docs - API documentation"
         ],
         "agents": {
             "welcome_agent": "✅ Active",
             "benefit_agent": "✅ Active",
-            "policy_agent": "✅ Active",
-            "chat_agent": "✅ Active"
+            "policy_agent": "✅ Active"
         }
     }
 
