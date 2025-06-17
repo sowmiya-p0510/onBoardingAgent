@@ -45,6 +45,7 @@ class OnboardingResponse(BaseModel):
 class ChatRequest(BaseModel):
     email: str
     question: str
+    
 
 # Create the LLM
 llm = ChatOpenAI(model_name="gpt-4", temperature=0.5)
