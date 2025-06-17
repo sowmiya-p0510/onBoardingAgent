@@ -320,7 +320,7 @@ async def list_available_documents():
             "error": str(e),
             "status": "error"
         }
-
+#To save the acknowledge document in db
 @app.post("/document/acknowledge", response_model=DocumentAcknowledgmentResponse)
 async def acknowledge_document(req: DocumentAcknowledgmentRequest):
     """
@@ -367,63 +367,7 @@ async def acknowledge_document(req: DocumentAcknowledgmentRequest):
             detail=f"Error recording document acknowledgment: {str(e)}"
         )
 
-@app.get("/document/acknowledgments/{email}")
-async def get_user_acknowledgments(email: str):
-    """
-    Get all document acknowledgments for a specific user.
-    
-    Returns list of documents the user has acknowledged reading.
-    """
-    try:
-        supabase = get_supabase_client()
-        
-        response = supabase.table("document_acknowledgments") \
-            .select("*") \
-            .eq("email", email) \
-            .order("acknowledged_at", desc=True) \
-            .execute()
-        
-        return {
-            "success": True,
-            "email": email,
-            "acknowledgments": response.data,
-            "total_count": len(response.data) if response.data else 0
-        }
-        
-    except Exception as e:
-        print(f"Error fetching acknowledgments: {e}")
-        raise HTTPException(
-            status_code=500, 
-            detail=f"Error fetching acknowledgments: {str(e)}"
-        )
 
-@app.get("/document/acknowledgments")
-async def get_all_acknowledgments():
-    """
-    Get all document acknowledgments (admin endpoint).
-    
-    Returns all acknowledgments in the system.
-    """
-    try:
-        supabase = get_supabase_client()
-        
-        response = supabase.table("document_acknowledgments") \
-            .select("*") \
-            .order("acknowledged_at", desc=True) \
-            .execute()
-        
-        return {
-            "success": True,
-            "acknowledgments": response.data,
-            "total_count": len(response.data) if response.data else 0
-        }
-        
-    except Exception as e:
-        print(f"Error fetching all acknowledgments: {e}")
-        raise HTTPException(
-            status_code=500, 
-            detail=f"Error fetching all acknowledgments: {str(e)}"
-        )
 
 if __name__ == "__main__":
     import uvicorn
