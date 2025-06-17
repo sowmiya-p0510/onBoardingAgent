@@ -8,6 +8,7 @@ from datetime import datetime
 from typing import Optional
 from supabase import create_client, Client
 from fastapi.middleware.cors import CORSMiddleware
+from contextlib import asynccontextmanager
 
 # Import our agents
 from agents.benefit_agent import BenefitAgent, BenefitFetchRequest, BenefitFetchResponse
@@ -21,9 +22,6 @@ from utils.gcs_utils import GCSManager
 
 # Load environment variables
 load_dotenv()
-
-# Initialize FastAPI app
-app = FastAPI(title="AI Onboarding System")
 
 # Pydantic models for input
 class OnboardingRequest(BaseModel):
@@ -47,14 +45,6 @@ class OnboardingResponse(BaseModel):
 class ChatRequest(BaseModel):
     email: str
     question: str
-
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],  # or specify your frontend origin like ["http://localhost:3000"]
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
 
 # Create the LLM
 llm = ChatOpenAI(model_name="gpt-4", temperature=0.5)
@@ -130,9 +120,10 @@ policy_agent = PolicyAgent(agent=policy_specialist)
 expense_agent = ExpenseAgent(agent=expense_specialist)
 chat_agent = StartupVectorChatAgent()
 
-@app.on_event("startup")
-async def startup_event():
-    """Preload vector store when server starts"""
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """Handle startup and shutdown events"""
+    # Startup
     print("🚀 Server starting - initializing chat agent...")
     
     # Set GCS functions for the chat agent
@@ -146,6 +137,24 @@ async def startup_event():
     preload_thread = chat_agent.preload_vector_store_background()
     print("📋 Vector store preloading started in background...")
     print("🎯 Server ready! Vector store will be available shortly.")
+    
+    yield
+    
+    # Shutdown (cleanup if needed)
+    print("🛑 Server shutting down...")
+
+# Initialize FastAPI app with lifespan
+app = FastAPI(title="AI Onboarding System", lifespan=lifespan)
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],  # or specify your frontend origin like ["http://localhost:3000"]
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+# ...existing code...
 
 @app.get("/health")
 async def health_check():
