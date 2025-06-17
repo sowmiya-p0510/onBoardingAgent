@@ -11,7 +11,7 @@ from supabase import create_client, Client
 # Import our agents
 from agents.benefit_agent import BenefitAgent, BenefitFetchRequest, BenefitFetchResponse
 from agents.policy_agent import PolicyAgent, PolicyFetchRequest, PolicyFetchResponse
-# Import our new WelcomeAgent instead of SimpleWelcomeAgent
+from agents.expense_agent import ExpenseAgent, ExpenseFetchRequest, ExpenseFetchResponse  # New import
 from agents.welcome_agent import WelcomeAgent, WelcomeRequest, WelcomeResponse, UserProfile
 from agents.chat_agent import ChatAgent
 
@@ -38,6 +38,7 @@ class OnboardingResponse(BaseModel):
     welcome_message: str
     benefits_summary: str = None
     policy_summary: str = None
+    expense_summary: str = None  # New field for expense summary
     next_steps: list
     documents: list
     team_contacts: dict
@@ -91,6 +92,21 @@ policy_specialist = Agent(
     verbose=True
 )
 
+# New expense specialist agent
+expense_specialist = Agent(
+    role='Expense Management Specialist',
+    goal='Help employees understand and navigate expense policies and procedures',
+    backstory="""You are an experienced expense management specialist with deep knowledge of 
+    corporate expense policies and reimbursement processes. You excel at explaining expense 
+    procedures in simple, actionable terms. You understand that employees need clear guidance 
+    on submitting expenses correctly the first time, so you focus on practical explanations 
+    and common pitfalls to avoid. You're particularly skilled at highlighting expense limits, 
+    required documentation, and approval workflows. You always emphasize best practices for 
+    efficient expense management and timely reimbursement.""",
+    llm=llm,
+    verbose=True
+)
+
 # Initialize helpers
 gcs_manager = GCSManager()
 
@@ -101,9 +117,10 @@ def get_supabase_client() -> Client:
     return create_client(supabase_url, supabase_key)
 
 # Initialize agents
-welcome_agent = WelcomeAgent(agent=hr_agent)  # Using our new WelcomeAgent
+welcome_agent = WelcomeAgent(agent=hr_agent)
 benefit_agent = BenefitAgent(agent=benefit_specialist)
 policy_agent = PolicyAgent(agent=policy_specialist)
+expense_agent = ExpenseAgent(agent=expense_specialist)  # Initialize the new expense agent
 chat_agent = ChatAgent()
 
 @app.post("/onboard", response_model=OnboardingResponse)
@@ -115,6 +132,7 @@ async def onboard_employee(req: OnboardingRequest):
     1. Welcome Agent: Creates personalized welcome message and guidance
     2. Benefits Agent: Fetches and summarizes benefit documents
     3. Policy Agent: Fetches and summarizes policy documents
+    4. Expense Agent: Fetches and summarizes expense documents
     """
     try:
         # Get detailed welcome info from Welcome Agent
@@ -154,6 +172,22 @@ async def onboard_employee(req: OnboardingRequest):
         except Exception as e:
             print(f"Policy processing error: {e}")
 
+        # Get expense information - new section
+        expense_summary = "Expense policies and procedures will be provided during your orientation."
+        try:
+            expense_request = ExpenseFetchRequest(role=req.role, email=req.email)
+            expense_response = expense_agent.process_request(
+                expense_request,
+                supabase_client=supabase,
+                get_signed_url=gcs_manager.get_signed_url,
+                list_files_in_folder=gcs_manager.list_files_in_folder,
+                check_file_exists=gcs_manager.check_file_exists
+            )
+            if expense_response.success:
+                expense_summary = expense_response.overall_summary
+        except Exception as e:
+            print(f"Expense processing error: {e}")
+
         # Create default response if welcome agent fails
         default_welcome = f"Welcome {req.name}! We're excited to have you join our {req.team} team as our new {req.role}."
 
@@ -170,7 +204,8 @@ async def onboard_employee(req: OnboardingRequest):
         next_steps = [
             f"Contact your manager {user_profile.manager_name if user_profile else req.manager} for guidance",
             "Complete employee documentation",
-            "Review company policies"
+            "Review company policies",
+            "Set up your expense management account"  # New next step
         ]
 
         team_contacts = {
@@ -184,8 +219,9 @@ async def onboard_employee(req: OnboardingRequest):
             welcome_message=welcome_message,
             benefits_summary=benefits_summary,
             policy_summary=policy_summary,
+            expense_summary=expense_summary,  # Include expense summary in response
             next_steps=next_steps,
-            documents=["Employee Handbook", "Company Policies"],
+            documents=["Employee Handbook", "Company Policies", "Expense Guidelines"],  # Updated documents list
             team_contacts=team_contacts
         )
 
@@ -234,6 +270,23 @@ async def fetch_policies(req: PolicyFetchRequest):
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error fetching policies: {str(e)}")
 
+# New endpoint for expense documents
+@app.post("/expense/fetch", response_model=ExpenseFetchResponse)
+async def fetch_expenses(req: ExpenseFetchRequest):
+    """Fetch and summarize expense documents for an employee."""
+    try:
+        supabase = get_supabase_client()
+        response = expense_agent.process_request(
+            req, 
+            supabase_client=supabase,
+            get_signed_url=gcs_manager.get_signed_url,
+            list_files_in_folder=gcs_manager.list_files_in_folder,
+            check_file_exists=gcs_manager.check_file_exists
+        )
+        return response
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error fetching expense documents: {str(e)}")
+
 @app.post("/chat")
 async def chat_with_agent(req: ChatRequest):
     """Chat endpoint for policy and benefits questions"""
@@ -244,14 +297,14 @@ async def chat_with_agent(req: ChatRequest):
             get_signed_url=gcs_manager.get_signed_url,
             check_file_exists=gcs_manager.check_file_exists
         )
-        
+
         return {
             "response": response,
             "status": "success",
             "user_id": req.user_id,
             "session_id": req.session_id
         }
-    
+
     except Exception as e:
         return {
             "response": "I'm sorry, I encountered an error while processing your request. Please try again later.",
@@ -274,13 +327,17 @@ async def list_available_documents():
     try:
         policy_files = gcs_manager.list_files_in_folder("policies/")
         benefit_files = gcs_manager.list_files_in_folder("benefits/")
-        
+        expense_files = gcs_manager.list_files_in_folder("expenses/")  # New line to list expense files
+
         documents = {
             "policies": [f.split('/')[-1] for f in policy_files if f.endswith('.pdf')],
             "benefits": [f.split('/')[-1] for f in benefit_files if f.endswith('.pdf')],
-            "total_count": len([f for f in policy_files if f.endswith('.pdf')]) + len([f for f in benefit_files if f.endswith('.pdf')])
+            "expenses": [f.split('/')[-1] for f in expense_files if f.endswith('.pdf')],  # New entry for expenses
+            "total_count": len([f for f in policy_files if f.endswith('.pdf')]) + 
+                          len([f for f in benefit_files if f.endswith('.pdf')]) +
+                          len([f for f in expense_files if f.endswith('.pdf')])  # Updated count
         }
-        
+
         return {
             "documents": documents,
             "status": "success"
@@ -301,6 +358,7 @@ async def health_check():
             "welcome_agent": {"status": "healthy", "agent_type": "welcome"},
             "benefit_agent": {"status": "healthy", "agent_type": "benefit"},
             "policy_agent": {"status": "healthy", "agent_type": "policy"},
+            "expense_agent": {"status": "healthy", "agent_type": "expense"},  # New agent status
             "chat_agent": {"status": "healthy", "agent_type": "chat"}
         },
         "version": "1.0.0"
@@ -318,6 +376,7 @@ async def root():
             "/onboard - Complete onboarding process",
             "/benefit/fetch - Fetch benefits",
             "/policy/fetch - Fetch policies",
+            "/expense/fetch - Fetch expense policies",  # New endpoint
             "/chat - Chat with HR assistant",
             "/chat/health - Chat service health check",
             "/docs - API documentation"
@@ -326,6 +385,7 @@ async def root():
             "welcome_agent": "✅ Active",
             "benefit_agent": "✅ Active",
             "policy_agent": "✅ Active",
+            "expense_agent": "✅ Active",  # New agent status
             "chat_agent": "✅ Active"
         }
     }
