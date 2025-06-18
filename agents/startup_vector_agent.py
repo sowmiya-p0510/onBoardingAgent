@@ -375,23 +375,57 @@ Please feel free to rephrase your question or ask about any of these topics."""
                 content_preview = item['content'][:800] + "..." if len(item['content']) > 800 else item['content']
                 context += f"From {item['source']}: {content_preview}\n\n"
                 print(f"🎯 Using: {item['source']}")
-              # Original prompt without keyword filtering
-            prompt = f"""You are an AI HR Assistant providing automated support. Based on the company information below, answer the employee question in a helpful and professional manner.
+            
+            # Enhanced prompt for detailed responses with complete user context
+            user_context = ""
+            if supabase_client:
+                user_profile = self.get_user_profile(email, supabase_client)
+                if user_profile:
+                    # Create comprehensive user context from all profile fields
+                    user_context = f"""
+Employee Profile Context:
+- Name: {user_profile.get('full_name', 'N/A')}
+- Email: {user_profile.get('email', 'N/A')}
+- Role: {user_profile.get('role', 'N/A')}
+- Department: {user_profile.get('department', 'N/A')}
+- Manager: {user_profile.get('manager_name', 'N/A')} ({user_profile.get('manager_email', 'N/A')})
+- Joining Date: {user_profile.get('joining_date', 'N/A')}
+- Location: {user_profile.get('location', 'N/A')}
+- Employment Type: {user_profile.get('employment_type', 'N/A')}
+- User ID: {user_profile.get('user_id', 'N/A')}
+"""
+
+            prompt = f"""You are an AI HR Assistant providing comprehensive support to employees. Based on the company information and employee context below, provide a detailed and thorough answer to the employee's question.
 
 Question: {question}
+
+{user_context}
 
 Company Information:
 {context}
 
 Instructions:
-- Provide a clear, direct answer based on the company information
-- Be helpful and professional
-- Reference the source document when appropriate
-- Keep the response concise (2-4 sentences)
-- Act as an automated HR system, not as a human representative
-- For complex or sensitive matters, suggest contacting HR directly at {self.hr_contact_email}
+- Provide a comprehensive, detailed answer based on the company information
+- Use the employee profile context to personalize your response when relevant
+- Address the employee by their first name when appropriate
+- Tailor information based on their role, department, employment type, and seniority
+- Consider their joining date for tenure-based benefits or policies
+- Reference their manager when escalation or approval processes are mentioned
+- Adapt explanations based on their location (remote vs office policies)
+- Consider employment type differences (full-time vs part-time vs contractor benefits)
+- Include all relevant details, procedures, eligibility criteria, and requirements
+- Break down complex information into clear sections or bullet points
+- Explain the reasoning behind policies when possible
+- Include specific examples or scenarios where applicable, especially relevant to their role/department
+- Reference multiple source documents when they provide related information
+- Use clear headings or sections to organize detailed information
+- Provide step-by-step procedures when explaining processes
+- Include important deadlines, timeframes, or restrictions
+- Mention any prerequisites or conditions that apply
+- Be thorough and educational in your response
+- For complex matters, still suggest contacting HR for personalized guidance at {self.hr_contact_email}
 
-Answer:"""
+Provide a complete and informative response that fully addresses the question with personalized context:"""
 
             response = self.llm.invoke(prompt)
             
@@ -446,10 +480,10 @@ Answer:"""
 🕒 Business Hours: Monday-Friday, 9:00 AM - 5:00 PM EST"""
 
     def get_user_profile(self, email: str, supabase_client):
-        """Get user profile for personalized greeting"""
+        """Get complete user profile for comprehensive personalization"""
         try:
             response = supabase_client.table("user_profiles") \
-                .select("full_name, role, department") \
+                .select("*") \
                 .eq("email", email) \
                 .execute()
             
