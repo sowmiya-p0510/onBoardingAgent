@@ -36,6 +36,70 @@ class StartupVectorChatAgent:
         self.hr_contact_email = "hr.support@company.com"
         self.hr_phone = "+1 (555) 123-4567"
         
+        # Access portal URLs mapping for system access requests
+        self.access_portals = {
+            "slack": {
+                "url": "https://portal.fusefy.ai/slack",
+                "description": "Company Slack workspace for team communication",
+                "keywords": ["slack", "chat", "messaging", "communication", "team chat", "channels"]
+            },
+            "github": {
+                "url": "https://portal.fusefy.ai/git",
+                "description": "GitHub repository access for code collaboration",
+                "keywords": ["github", "git", "code", "repository", "version control", "development", "repo"]
+            },
+            "system": {
+                "url": "https://portal.fusefy.ai/system",
+                "description": "System access portal for IT resources",
+                "keywords": ["system access", "system", "IT resources", "infrastructure", "server access"]
+            },
+            "portal": {
+                "url": "https://portal.fusefy.ai/dashboard",
+                "description": "Main company portal and dashboard",
+                "keywords": ["portal", "dashboard", "main portal", "company portal", "home portal"]
+            },
+            "email": {
+                "url": "https://portal.fusefy.ai/email",
+                "description": "Company email system access",
+                "keywords": ["email", "mail", "outlook", "company email", "mailbox"]
+            },
+            "vpn": {
+                "url": "https://portal.fusefy.ai/vpn",
+                "description": "VPN access for secure remote connections",
+                "keywords": ["vpn", "remote access", "secure connection", "network access", "virtual private network"]
+            },
+            "timesheet": {
+                "url": "https://portal.fusefy.ai/timesheet",
+                "description": "Time tracking and timesheet management",
+                "keywords": ["timesheet", "time tracking", "hours", "attendance", "clock in", "clock out"]
+            },
+            "jira": {
+                "url": "https://portal.fusefy.ai/jira",
+                "description": "Project management and issue tracking",
+                "keywords": ["jira", "project management", "tickets", "issues", "project tracking", "bug tracking"]
+            },
+            "confluence": {
+                "url": "https://portal.fusefy.ai/confluence",
+                "description": "Company wiki and documentation platform",
+                "keywords": ["confluence", "wiki", "documentation", "knowledge base", "docs"]
+            },
+            "office365": {
+                "url": "https://portal.fusefy.ai/office365",
+                "description": "Microsoft Office 365 suite access",
+                "keywords": ["office 365", "office", "microsoft", "word", "excel", "powerpoint", "teams"]
+            },
+            "aws": {
+                "url": "https://portal.fusefy.ai/aws",
+                "description": "AWS cloud services access",
+                "keywords": ["aws", "amazon web services", "cloud", "ec2", "s3", "lambda"]
+            },
+            "database": {
+                "url": "https://portal.fusefy.ai/database",
+                "description": "Database access and management tools",
+                "keywords": ["database", "db", "sql", "mysql", "postgresql", "data access"]
+            }
+        }
+        
         # Folder definitions for better LLM understanding
         self.folder_definitions = {
             "onboarding agent/benefits/": {
@@ -371,11 +435,39 @@ class StartupVectorChatAgent:
                 # Get user profile for personalized greeting
                 user_profile = self.get_user_profile(email, supabase_client)
                 self.user_sessions[email] = True
-                
-                # If it's a simple greeting, return welcome message only
+                  # If it's a simple greeting, return welcome message only
                 greeting_words = ['hi', 'hello', 'hey', 'good morning', 'good afternoon', 'good evening']
                 if any(word in question.lower() for word in greeting_words) and len(question.split()) <= 3:
                     return self.generate_welcome_message(user_profile)
+              # Check if this is an access-related question first (before document search)
+            detected_access = self.detect_access_request(question)
+            
+            if detected_access["is_access_request"]:
+                # Get user profile for personalization if not already retrieved
+                if not user_profile and supabase_client:
+                    user_profile = self.get_user_profile(email, supabase_client)
+                
+                # Generate access-specific response
+                return self.generate_access_response(question, detected_access, user_profile)
+            
+            # Check if this is an attestation query (before document search)
+            if self.detect_attestation_query(question):
+                # Get user profile if not already retrieved
+                if not user_profile and supabase_client:
+                    user_profile = self.get_user_profile(email, supabase_client)
+                
+                # Check if initialized for document access
+                if not self.is_initialized:
+                    with self.initialization_lock:
+                        if not self.is_initialized:
+                            print("⚡ Quick vector store check...")
+                            self.set_gcs_functions(list_files_in_folder, get_signed_url, check_file_exists)
+                            if not self.initialize_vector_store_fast(list_files_in_folder, get_signed_url, check_file_exists):
+                                return "I'm currently initializing my knowledge base. Please try again in a moment, and I'll be ready to help you with your HR questions!"
+                            self.is_initialized = True
+                
+                # Generate attestation-specific response
+                return self.generate_attestation_response(user_profile, get_signed_url)
               # Check if initialized, if not try quick initialization
             if not self.is_initialized:
                 with self.initialization_lock:
@@ -384,14 +476,10 @@ class StartupVectorChatAgent:
                         self.set_gcs_functions(list_files_in_folder, get_signed_url, check_file_exists)
                         if not self.initialize_vector_store_fast(list_files_in_folder, get_signed_url, check_file_exists):
                             return "I'm currently initializing my knowledge base. Please try again in a moment, and I'll be ready to help you with your HR questions!"
-                        self.is_initialized = True              # Fast search - check if it's an attestation query first
-            if self.detect_attestation_query(question):
-                # Get ALL mandatory documents for attestation
-                relevant_content = self.get_all_mandatory_documents(get_signed_url)
-                print(f"🎯 Attestation query detected - retrieving ALL {len(relevant_content)} mandatory documents")
-            else:
-                # Regular search for other queries
-                relevant_content = self.search_relevant_content_fast(question)
+                        self.is_initialized = True
+            
+            # Regular search for other queries
+            relevant_content = self.search_relevant_content_fast(question)
             
             if not relevant_content:                # Professional fallback with HR contact info
                 fallback_message = f"""I apologize, but I couldn't find specific information related to your question in our current HR knowledge base.
@@ -526,7 +614,9 @@ Instructions:
 - Include important deadlines, timeframes, or restrictions
 - Mention any prerequisites or conditions that apply
 - Be thorough and educational in your response
-- For complex matters, still suggest contacting HR for personalized guidance at {self.hr_contact_email}
+- DO NOT include HR contact information in your response as it will be added separately
+- Focus on the policy/document content without repeating contact details from documents
+- For complex matters, still suggest contacting HR for personalized guidance but do not include specific contact details
 
 Provide a complete and informative response that fully addresses the question with personalized context and proper folder categorization:"""
 
@@ -614,7 +704,9 @@ Provide a complete and informative response that fully addresses the question wi
             'attest', 'acknowledge', 'mandatory', 'onboarding', 'required documents',
             'need to sign', 'compliance documents', 'must review', 'acknowledgment',
             'documents to complete', 'new employee documents', 'required reading',
-            'what documents', 'which documents', 'documents i need', 'docs to review'
+            'what documents', 'which documents', 'documents i need', 'docs to review',
+            'mandatory documents', 'documents for onboarding', 'onboarding process',
+            'documents to acknowledge', 'documents for new employees'
         ]
         
         question_lower = question.lower()
@@ -665,3 +757,136 @@ Provide a complete and informative response that fully addresses the question wi
         except Exception as e:
             print(f"❌ Error getting mandatory documents: {e}")
             return []
+    
+    def detect_access_request(self, question: str) -> Dict[str, Any]:
+        """Detect if the question is asking for system access or portal information"""
+        question_lower = question.lower()
+        detected_portals = []
+        
+        # Check for general access keywords
+        access_keywords = ["access", "login", "log in", "sign in", "portal", "how to get to", "link to", "url for"]
+        is_access_related = any(keyword in question_lower for keyword in access_keywords)
+        
+        if is_access_related:
+            for portal_key, portal_info in self.access_portals.items():
+                for keyword in portal_info["keywords"]:
+                    if keyword in question_lower:
+                        detected_portals.append({
+                            "name": portal_key,
+                            "url": portal_info["url"],
+                            "description": portal_info["description"]
+                        })
+                        break  # Found a match for this portal, move to next
+        
+        return {
+            "is_access_request": len(detected_portals) > 0,
+            "portals": detected_portals
+        }
+
+    def generate_access_response(self, question: str, detected_access: Dict, user_profile: Dict = None) -> str:
+        """Generate response for access-related questions"""
+        portals = detected_access["portals"]
+        
+        # Personalized greeting
+        name = ""
+        if user_profile and user_profile.get('full_name'):
+            name = user_profile['full_name'].split()[0] + ", "
+        
+        if len(portals) == 1:
+            portal = portals[0]
+            return f"""Hi {name}here's the access information you need:
+
+🔗 **{portal['description']}**
+Access URL: [{portal['url']}]({portal['url']})
+
+**Getting Started:**
+1. Click the link above to access the portal
+2. Use your company credentials to log in
+3. If you encounter any login issues, contact IT support
+
+**Need Help?**
+- For login issues: Contact IT support at it-support@fusefy.ai
+- For access permissions: Contact your manager or HR
+- For account setup: Contact HR at {self.hr_contact_email}
+
+---
+*If you need access to additional systems, please let me know and I'll provide the appropriate portal links.*"""
+        
+        else:
+            # Multiple portals detected
+            portal_list = ""
+            for portal in portals:
+                portal_list += f"- **{portal['description']}**: [{portal['url']}]({portal['url']})\n"
+            
+            return f"""Hi {name}here are the access portals you requested:
+
+🔗 **System Access Portals:**
+
+{portal_list}
+
+**Getting Started:**
+1. Click on any of the links above to access the respective portal
+2. Use your company credentials to log in
+3. If you encounter any login issues, contact IT support
+
+**Need Help?**
+- For login issues: Contact IT support at it-support@fusefy.ai
+- For access permissions: Contact your manager or HR
+- For account setup: Contact HR at {self.hr_contact_email}
+
+---
+*If you need access to additional systems not listed above, please let me know and I'll help you find the right portal.*"""
+    
+    def generate_attestation_response(self, user_profile: Dict = None, get_signed_url=None) -> str:
+        """Generate a clean, focused response for mandatory document attestation queries"""
+        
+        # Get mandatory documents
+        mandatory_docs = self.get_all_mandatory_documents(get_signed_url)
+        
+        # Personalized greeting
+        name = ""
+        if user_profile and user_profile.get('full_name'):
+            name = user_profile['full_name'].split()[0]
+            role = user_profile.get('role', '')
+            dept = user_profile.get('department', '')
+            greeting = f"Hello {name}! "
+            if role and dept:
+                greeting += f"As a {role} in {dept}, here are the mandatory documents you need to acknowledge for your onboarding process:"
+            else:
+                greeting += "Here are the mandatory documents you need to acknowledge for your onboarding process:"
+        else:
+            greeting = "Here are the mandatory documents you need to acknowledge for your onboarding process:"
+        
+        # Build clean document list
+        doc_list = ""
+        doc_links = ""
+        
+        for i, doc in enumerate(mandatory_docs, 1):
+            doc_name = doc['source'].replace('_', ' ').title()
+            doc_list += f"{i}. **{doc_name}**\n"
+            
+            # Add document link if available
+            if doc.get('signed_url'):
+                doc_links += f"📄 [{doc_name}]({doc['signed_url']})\n"
+        
+        response = f"""{greeting}
+
+**📋 Mandatory Onboarding Documents:**
+
+{doc_list}
+
+**📎 Document Links:**
+{doc_links}
+
+**Next Steps:**
+1. Review each document carefully
+2. Contact HR if you have any questions about the content
+3. Complete any required acknowledgments as instructed
+4. Keep copies for your records
+
+**Important:** These documents are mandatory for all new employees and must be acknowledged to complete your onboarding process.
+
+---
+*For questions about these documents, contact HR at {self.hr_contact_email} or {self.hr_phone}*"""
+
+        return response
