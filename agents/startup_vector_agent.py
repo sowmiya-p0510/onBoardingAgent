@@ -32,10 +32,39 @@ class StartupVectorChatAgent:
         # URL cache for fast document reference generation
         self.url_cache = {}  # {file_path: {'url': signed_url, 'expires_at': timestamp}}
         self.url_cache_duration = 3000  # 50 minutes (safe buffer from 1 hour expiration)
-        
-        # HR contact information for fallback scenarios
+          # HR contact information for fallback scenarios
         self.hr_contact_email = "hr.support@company.com"
         self.hr_phone = "+1 (555) 123-4567"
+        
+        # Folder definitions for better LLM understanding
+        self.folder_definitions = {
+            "onboarding agent/benefits/": {
+                "name": "Employee Benefits",
+                "description": "Comprehensive information about employee compensation packages, health insurance, retirement plans, paid time off policies, and other benefit programs available to employees.",
+                "content_type": "Benefits and compensation information",
+                "use_cases": ["health insurance questions", "retirement planning", "leave policies", "benefit enrollment", "compensation packages"]
+            },
+            "onboarding agent/expense/": {
+                "name": "Expense Management",
+                "description": "Policies and procedures for business expense reporting, reimbursement processes, travel guidelines, and expense approval workflows.",
+                "content_type": "Expense and reimbursement policies",
+                "use_cases": ["expense reporting", "travel reimbursement", "business expenses", "receipt requirements", "approval processes"]
+            },
+            "onboarding agent/onboarding/": {
+                "name": "Mandatory Onboarding Documents",
+                "description": "Essential documents and procedures that all new employees must review, acknowledge, and complete during their onboarding process. These are mandatory requirements for all new hires.",
+                "content_type": "Mandatory onboarding requirements and acknowledgment documents",
+                "use_cases": ["new employee requirements", "mandatory training", "document acknowledgment", "onboarding checklist", "compliance requirements"],
+                "mandatory": True,
+                "priority": "high"
+            },
+            "onboarding agent/policy/": {
+                "name": "Company Policies",
+                "description": "Official company policies covering workplace conduct, compliance requirements, security protocols, and organizational guidelines that all employees must follow.",
+                "content_type": "Corporate policies and compliance documentation",
+                "use_cases": ["code of conduct", "security policies", "workplace guidelines", "compliance requirements", "disciplinary procedures"]
+            }
+        }
         
         print("✅ Agent initialized - ready for preloading")
     
@@ -217,7 +246,7 @@ class StartupVectorChatAgent:
             all_ids = []
             
             chunk_id = 0
-            for doc_name, (content, file_path) in documents.items():  # Unpack content and file path
+            for doc_name, (content, file_path, folder_info) in documents.items():  # Unpack content, file path, and folder info
                 chunks = self.chunk_text_simple(content)
                 
                 for i, chunk in enumerate(chunks):
@@ -225,6 +254,8 @@ class StartupVectorChatAgent:
                     
                     # Improved document type classification based on folder path
                     doc_type = "document"  # default
+                    is_mandatory = False
+                    
                     if "onboarding agent/policy/" in file_path.lower():
                         doc_type = "policy"
                     elif "onboarding agent/benefit" in file_path.lower():
@@ -233,12 +264,17 @@ class StartupVectorChatAgent:
                         doc_type = "expense"
                     elif "onboarding agent/onboarding/" in file_path.lower():
                         doc_type = "onboarding"
+                        is_mandatory = True  # Mark onboarding documents as mandatory
                     
                     all_metadatas.append({
                         "source": doc_name,
                         "file_path": file_path,  # Store the original GCS file path
                         "chunk_index": i,
                         "doc_type": doc_type,
+                        "folder_name": folder_info.get('name', 'Unknown'),
+                        "folder_description": folder_info.get('description', ''),
+                        "content_type": folder_info.get('content_type', ''),
+                        "is_mandatory": is_mandatory,
                         "documents_hash": current_hash if chunk_id == 0 else ""  # Store hash only once
                     })
                     all_ids.append(f"{doc_name}_chunk_{i}")
@@ -261,14 +297,15 @@ class StartupVectorChatAgent:
             return False
     
     def load_documents_parallel(self, list_files_in_folder, get_signed_url, check_file_exists) -> Dict[str, tuple]:
-        """Load documents and store content with file paths"""
+        """Load documents and store content with file paths and folder context"""
         documents = {}
         
         # Updated folder structure with parent "onboarding agent/" folder
         for folder in ["onboarding agent/benefits/", "onboarding agent/expense/", "onboarding agent/onboarding/", "onboarding agent/policy/"]:
             try:
                 files = list_files_in_folder(folder)
-                print(f"📁 Processing {len(files)} files from {folder}")
+                folder_info = self.folder_definitions.get(folder, {})
+                print(f"📁 Processing {len(files)} files from {folder_info.get('name', folder)}")
                 
                 for file_path in files:
                     if file_path.endswith('.pdf') and check_file_exists(file_path):
@@ -277,8 +314,9 @@ class StartupVectorChatAgent:
                             content = self.extract_text_from_pdf_fast(signed_url)
                             if content:
                                 file_name = file_path.split('/')[-1].replace('.pdf', '')
-                                documents[file_name] = (content, file_path)  # Store content AND file path
-                                print(f"✅ Loaded: {file_name}")
+                                # Store content, file path, and folder context
+                                documents[file_name] = (content, file_path, folder_info)
+                                print(f"✅ Loaded: {file_name} ({folder_info.get('name', 'Unknown')})")
                         
                         # Small delay to be gentle on GCS
                         time.sleep(0.1)
@@ -289,7 +327,7 @@ class StartupVectorChatAgent:
         return documents
     
     def search_relevant_content_fast(self, question: str) -> List[Dict]:
-        """Fast search with minimal results"""
+        """Fast search with minimal results and folder context"""
         if not self.collection:
             return []
         
@@ -302,10 +340,16 @@ class StartupVectorChatAgent:
             
             relevant_content = []
             for i, doc in enumerate(results['documents'][0]):
+                metadata = results['metadatas'][0][i]
                 relevant_content.append({
                     'content': doc,
-                    'source': results['metadatas'][0][i]['source'],
-                    'file_path': results['metadatas'][0][i].get('file_path')  # Include file path
+                    'source': metadata['source'],
+                    'file_path': metadata.get('file_path'),
+                    'doc_type': metadata.get('doc_type'),
+                    'folder_name': metadata.get('folder_name'),
+                    'folder_description': metadata.get('folder_description'),
+                    'content_type': metadata.get('content_type'),
+                    'is_mandatory': metadata.get('is_mandatory', False)
                 })
             
             return relevant_content
@@ -321,17 +365,17 @@ class StartupVectorChatAgent:
         try:
             # Check if this is the user's first message for personalized greeting
             is_first_message = email not in self.user_sessions
+            user_profile = None
             
             if is_first_message and supabase_client:
                 # Get user profile for personalized greeting
                 user_profile = self.get_user_profile(email, supabase_client)
-                welcome_message = self.generate_welcome_message(user_profile)
                 self.user_sessions[email] = True
                 
-                # If it's a simple greeting, return welcome message
+                # If it's a simple greeting, return welcome message only
                 greeting_words = ['hi', 'hello', 'hey', 'good morning', 'good afternoon', 'good evening']
                 if any(word in question.lower() for word in greeting_words) and len(question.split()) <= 3:
-                    return welcome_message
+                    return self.generate_welcome_message(user_profile)
               # Check if initialized, if not try quick initialization
             if not self.is_initialized:
                 with self.initialization_lock:
@@ -340,12 +384,16 @@ class StartupVectorChatAgent:
                         self.set_gcs_functions(list_files_in_folder, get_signed_url, check_file_exists)
                         if not self.initialize_vector_store_fast(list_files_in_folder, get_signed_url, check_file_exists):
                             return "I'm currently initializing my knowledge base. Please try again in a moment, and I'll be ready to help you with your HR questions!"
-                        self.is_initialized = True
-              # Fast search
-            relevant_content = self.search_relevant_content_fast(question)
+                        self.is_initialized = True              # Fast search - check if it's an attestation query first
+            if self.detect_attestation_query(question):
+                # Get ALL mandatory documents for attestation
+                relevant_content = self.get_all_mandatory_documents(get_signed_url)
+                print(f"🎯 Attestation query detected - retrieving ALL {len(relevant_content)} mandatory documents")
+            else:
+                # Regular search for other queries
+                relevant_content = self.search_relevant_content_fast(question)
             
-            if not relevant_content:
-                # Professional fallback with HR contact info
+            if not relevant_content:                # Professional fallback with HR contact info
                 fallback_message = f"""I apologize, but I couldn't find specific information related to your question in our current HR knowledge base.
 
 **For personalized assistance, please contact our HR team:**
@@ -362,24 +410,54 @@ I can help you with questions about:
 
 Please feel free to rephrase your question or ask about any of these topics."""
                 
-                if is_first_message and supabase_client:
-                    user_profile = self.get_user_profile(email, supabase_client)
+                # Only add welcome for first-time users with no content found
+                if is_first_message and user_profile:
                     welcome = self.generate_welcome_message(user_profile)
                     return f"{welcome}\n\n{fallback_message}"
                 return fallback_message
-            
-            # Create minimal context
+              # Create enhanced context with folder information
             context = ""
+            mandatory_docs = []
+            folder_context = ""
+            
             for item in relevant_content:
                 # Limit context size for speed
                 content_preview = item['content'][:800] + "..." if len(item['content']) > 800 else item['content']
-                context += f"From {item['source']}: {content_preview}\n\n"
-                print(f"🎯 Using: {item['source']}")
+                
+                # Add folder context information
+                folder_info = f"[{item.get('folder_name', 'Unknown')}] "
+                if item.get('is_mandatory'):
+                    folder_info += "(MANDATORY ONBOARDING DOCUMENT) "
+                    mandatory_docs.append(item['source'])
+                
+                context += f"{folder_info}From {item['source']}: {content_preview}\n\n"
+                print(f"🎯 Using: {item['source']} ({item.get('folder_name', 'Unknown')})")
             
-            # Enhanced prompt for detailed responses with complete user context
+            # Create folder definitions context
+            if relevant_content:
+                unique_folders = set()
+                for item in relevant_content:
+                    folder_path = None
+                    if 'onboarding agent/benefits/' in item.get('file_path', ''):
+                        folder_path = 'onboarding agent/benefits/'
+                    elif 'onboarding agent/expense/' in item.get('file_path', ''):
+                        folder_path = 'onboarding agent/expense/'
+                    elif 'onboarding agent/onboarding/' in item.get('file_path', ''):
+                        folder_path = 'onboarding agent/onboarding/'
+                    elif 'onboarding agent/policy/' in item.get('file_path', ''):
+                        folder_path = 'onboarding agent/policy/'
+                    
+                    if folder_path and folder_path not in unique_folders:
+                        unique_folders.add(folder_path)
+                        folder_def = self.folder_definitions.get(folder_path, {})
+                        folder_context += f"\n📁 {folder_def.get('name', 'Unknown')}: {folder_def.get('description', '')}"              # Enhanced prompt for detailed responses with complete user context and folder definitions
             user_context = ""
+            personalized_greeting = ""
+            
             if supabase_client:
-                user_profile = self.get_user_profile(email, supabase_client)
+                if not user_profile:
+                    user_profile = self.get_user_profile(email, supabase_client)
+                
                 if user_profile:
                     # Create comprehensive user context from all profile fields
                     user_context = f"""
@@ -394,19 +472,44 @@ Employee Profile Context:
 - Employment Type: {user_profile.get('employment_type', 'N/A')}
 - User ID: {user_profile.get('user_id', 'N/A')}
 """
+                    
+                    # Add personalized greeting for first-time users
+                    if is_first_message:
+                        name = user_profile.get('full_name', '').split()[0] if user_profile.get('full_name') else 'there'
+                        role = user_profile.get('role', '')
+                        dept = user_profile.get('department', '')
+                        
+                        if role and dept:
+                            personalized_greeting = f"Start your response with: 'Hello {name}! As a {role} in {dept}, here's what you need to know:'"
+                        else:
+                            personalized_greeting = f"Start your response with: 'Hello {name}! Here's what you need to know:'"
 
-            prompt = f"""You are an AI HR Assistant providing comprehensive support to employees. Based on the company information and employee context below, provide a detailed and thorough answer to the employee's question.
+            mandatory_notice = ""
+            if mandatory_docs:
+                mandatory_notice = f"""
+⚠️ IMPORTANT: The following documents contain MANDATORY ONBOARDING REQUIREMENTS that all new employees must review and acknowledge:
+{', '.join(mandatory_docs)}
+"""
+
+            prompt = f"""You are an AI HR Assistant providing comprehensive support to employees. Based on the company information, folder context, and employee profile below, provide a detailed and thorough answer to the employee's question.
 
 Question: {question}
 
 {user_context}
 
+Document Folder Definitions:{folder_context}
+
+{mandatory_notice}
+
 Company Information:
 {context}
 
 Instructions:
-- Provide a comprehensive, detailed answer based on the company information
+- {personalized_greeting if personalized_greeting else "Provide a comprehensive, detailed answer based on the company information"}
 - Use the employee profile context to personalize your response when relevant
+- Pay special attention to folder context - understand what type of information each folder contains
+- For MANDATORY ONBOARDING documents, emphasize that these are required for all new employees
+- When referencing onboarding folder documents, mention they are mandatory acknowledgment requirements
 - Address the employee by their first name when appropriate
 - Tailor information based on their role, department, employment type, and seniority
 - Consider their joining date for tenure-based benefits or policies
@@ -425,19 +528,22 @@ Instructions:
 - Be thorough and educational in your response
 - For complex matters, still suggest contacting HR for personalized guidance at {self.hr_contact_email}
 
-Provide a complete and informative response that fully addresses the question with personalized context:"""
+Provide a complete and informative response that fully addresses the question with personalized context and proper folder categorization:"""
 
             response = self.llm.invoke(prompt)
-            
-            # Generate URLs for referenced documents (happens in parallel with response processing)
+              # Generate URLs for referenced documents (with support for pre-generated URLs)
             referenced_documents = []
             unique_files = set()
             
             for item in relevant_content:
                 file_path = item.get('file_path')
                 if file_path and file_path not in unique_files:
-                    # Cache hit = instant, cache miss = minimal delay
-                    signed_url = self.get_cached_signed_url(file_path, get_signed_url)
+                    # Check if URL is already generated (for attestation queries)
+                    signed_url = item.get('signed_url')
+                    if not signed_url:
+                        # Generate URL if not already available
+                        signed_url = self.get_cached_signed_url(file_path, get_signed_url)
+                    
                     if signed_url:
                         referenced_documents.append({
                             'name': item['source'],
@@ -456,14 +562,8 @@ Provide a complete and informative response that fully addresses the question wi
                     if doc.get('url'):  # Only add link if URL exists
                         final_response += f"\n [{doc['name']}]({doc['url']})"
                     else:  # If no URL, just show the document name
-                        final_response += f"\n {doc['name']} (Document available through HR)"
-              # Add HR contact info footer for complex queries
+                        final_response += f"\n {doc['name']} (Document available through HR)"              # Add HR contact info footer for complex queries
             final_response += f"\n\n---\n*For additional assistance, contact HR at {self.hr_contact_email} or {self.hr_phone}*"
-            
-            if is_first_message and supabase_client:
-                user_profile = self.get_user_profile(email, supabase_client)
-                welcome = self.generate_welcome_message(user_profile)
-                final_response = f"{welcome}\n\n{final_response}"
             
             total_time = time.time() - start_time
             print(f"⚡ Response time: {total_time:.1f}s")
@@ -507,3 +607,61 @@ Provide a complete and informative response that fully addresses the question wi
                 return f"Hello {name}! 👋 I'm your AI HR Assistant. I'm here to help you with any questions about company policies, benefits, or procedures. What can I help you with today?"
         else:
             return "Hello! 👋 I'm your AI HR Assistant. I'm here to help you with any questions about company policies, benefits, or procedures. What can I help you with today?"
+
+    def detect_attestation_query(self, question: str) -> bool:
+        """Detect if the question is asking about documents to attest/acknowledge"""
+        attestation_keywords = [
+            'attest', 'acknowledge', 'mandatory', 'onboarding', 'required documents',
+            'need to sign', 'compliance documents', 'must review', 'acknowledgment',
+            'documents to complete', 'new employee documents', 'required reading',
+            'what documents', 'which documents', 'documents i need', 'docs to review'
+        ]
+        
+        question_lower = question.lower()
+        return any(keyword in question_lower for keyword in attestation_keywords)
+    
+    def get_all_mandatory_documents(self, get_signed_url) -> List[Dict]:
+        """Get ALL mandatory onboarding documents for attestation purposes"""
+        if not self.collection:
+            return []
+        
+        try:
+            # Get ALL documents marked as mandatory (onboarding folder)
+            results = self.collection.get(
+                where={"is_mandatory": True},
+                include=['documents', 'metadatas']
+            )
+            
+            mandatory_docs = []
+            unique_sources = set()
+            
+            for i, metadata in enumerate(results['metadatas']):
+                source = metadata['source']
+                # Only include each document once (avoid duplicates from chunks)
+                if source not in unique_sources:
+                    unique_sources.add(source)
+                    
+                    # Generate signed URL for each document
+                    file_path = metadata.get('file_path')
+                    signed_url = ""
+                    if file_path:
+                        signed_url = self.get_cached_signed_url(file_path, get_signed_url)
+                    
+                    mandatory_docs.append({
+                        'content': results['documents'][i] if i < len(results['documents']) else '',
+                        'source': source,
+                        'file_path': file_path,
+                        'doc_type': metadata.get('doc_type'),
+                        'folder_name': metadata.get('folder_name'),
+                        'folder_description': metadata.get('folder_description'),
+                        'content_type': metadata.get('content_type'),
+                        'is_mandatory': True,
+                        'signed_url': signed_url
+                    })
+            
+            print(f"📋 Found {len(mandatory_docs)} mandatory documents for attestation")
+            return mandatory_docs
+            
+        except Exception as e:
+            print(f"❌ Error getting mandatory documents: {e}")
+            return []
