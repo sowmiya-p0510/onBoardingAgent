@@ -33,8 +33,11 @@ class StartupVectorChatAgent:
         self.url_cache = {}  # {file_path: {'url': signed_url, 'expires_at': timestamp}}
         self.url_cache_duration = 3000  # 50 minutes (safe buffer from 1 hour expiration)
           # HR contact information for fallback scenarios
-        self.hr_contact_email = "hr.support@company.com"
+        self.hr_contact_email = "hr.support@fusefy.ai"
         self.hr_phone = "+1 (555) 123-4567"
+        
+        # Company name for consistent branding
+        self.company_name = "Fusefy"
         
         # Access portal URLs mapping for system access requests
         self.access_portals = {
@@ -172,7 +175,7 @@ class StartupVectorChatAgent:
             from langchain_openai import ChatOpenAI
             self._llm = ChatOpenAI(
                 model="gpt-3.5-turbo",  # Faster than GPT-4
-                temperature=0.3,
+                temperature=0.3,                
                 api_key=os.environ.get("OPENAI_API_KEY")
             )
         return self._llm
@@ -182,9 +185,9 @@ class StartupVectorChatAgent:
         if self._agent is None:
             from crewai import Agent
             self._agent = Agent(
-                role="HR Assistant",
-                goal="Provide quick, accurate answers",
-                backstory="You are a helpful HR assistant.",
+                role="Fusefy HR Assistant",
+                goal="Provide quick, accurate answers about Fusefy policies and procedures",
+                backstory=f"You are a helpful HR assistant for {self.company_name}, providing support to employees with company policies, benefits, and procedures.",
                 verbose=False,
                 allow_delegation=False,
                 llm=self.llm
@@ -573,13 +576,19 @@ Employee Profile Context:
                             personalized_greeting = f"Start your response with: 'Hello {name}! Here's what you need to know:'"
 
             mandatory_notice = ""
-            if mandatory_docs:
+            if mandatory_docs:                
                 mandatory_notice = f"""
 ⚠️ IMPORTANT: The following documents contain MANDATORY ONBOARDING REQUIREMENTS that all new employees must review and acknowledge:
 {', '.join(mandatory_docs)}
 """
 
-            prompt = f"""You are an AI HR Assistant providing comprehensive support to employees. Based on the company information, folder context, and employee profile below, provide a detailed and thorough answer to the employee's question.
+            prompt = f"""You are an AI HR Assistant for {self.company_name} providing comprehensive support to employees. Based on the company information, folder context, and employee profile below, provide a detailed and thorough answer to the employee's question.
+
+IMPORTANT INSTRUCTIONS:
+- You represent {self.company_name} - always refer to the company as "{self.company_name}" when mentioning the organization
+- Provide direct, helpful responses without formal closings like "Best regards," "Sincerely," or "Thank you for your question"
+- Keep responses conversational and professional but not overly formal
+- End responses with practical information or next steps, not pleasantries
 
 Question: {question}
 
@@ -594,6 +603,7 @@ Company Information:
 
 Instructions:
 - {personalized_greeting if personalized_greeting else "Provide a comprehensive, detailed answer based on the company information"}
+- Always refer to the organization as "{self.company_name}" when mentioning the company
 - Use the employee profile context to personalize your response when relevant
 - Pay special attention to folder context - understand what type of information each folder contains
 - For MANDATORY ONBOARDING documents, emphasize that these are required for all new employees
@@ -617,6 +627,8 @@ Instructions:
 - DO NOT include HR contact information in your response as it will be added separately
 - Focus on the policy/document content without repeating contact details from documents
 - For complex matters, still suggest contacting HR for personalized guidance but do not include specific contact details
+- DO NOT end with formal closings like "Best regards," "Sincerely," "Thank you," or similar phrases
+- End with practical next steps or relevant information instead of pleasantries
 
 Provide a complete and informative response that fully addresses the question with personalized context and proper folder categorization:"""
 
@@ -692,11 +704,11 @@ Provide a complete and informative response that fully addresses the question wi
             dept = user_profile.get('department', '')
             
             if role and dept:
-                return f"Hello {name}! 👋 I'm your AI HR Assistant. As a {role} in {dept}, I'm here to help you with any questions about company policies, benefits, or procedures. What can I help you with today?"
+                return f"Hello {name}! 👋 I'm your AI HR Assistant for {self.company_name}. As a {role} in {dept}, I'm here to help you with any questions about company policies, benefits, or procedures. What can I help you with today?"
             else:
-                return f"Hello {name}! 👋 I'm your AI HR Assistant. I'm here to help you with any questions about company policies, benefits, or procedures. What can I help you with today?"
+                return f"Hello {name}! 👋 I'm your AI HR Assistant for {self.company_name}. I'm here to help you with any questions about company policies, benefits, or procedures. What can I help you with today?"
         else:
-            return "Hello! 👋 I'm your AI HR Assistant. I'm here to help you with any questions about company policies, benefits, or procedures. What can I help you with today?"
+            return f"Hello! 👋 I'm your AI HR Assistant for {self.company_name}. I'm here to help you with any questions about company policies, benefits, or procedures. What can I help you with today?"
 
     def detect_attestation_query(self, question: str) -> bool:
         """Detect if the question is asking about documents to attest/acknowledge"""
@@ -801,7 +813,7 @@ Access URL: [{portal['url']}]({portal['url']})
 
 **Getting Started:**
 1. Click the link above to access the portal
-2. Use your company credentials to log in
+2. Use your {self.company_name} credentials to log in
 3. If you encounter any login issues, contact IT support
 
 **Need Help?**
@@ -809,8 +821,7 @@ Access URL: [{portal['url']}]({portal['url']})
 - For access permissions: Contact your manager or HR
 - For account setup: Contact HR at {self.hr_contact_email}
 
----
-*If you need access to additional systems, please let me know and I'll provide the appropriate portal links.*"""
+If you need access to additional systems, please let me know and I'll provide the appropriate portal links."""
         
         else:
             # Multiple portals detected
@@ -826,7 +837,7 @@ Access URL: [{portal['url']}]({portal['url']})
 
 **Getting Started:**
 1. Click on any of the links above to access the respective portal
-2. Use your company credentials to log in
+2. Use your {self.company_name} credentials to log in
 3. If you encounter any login issues, contact IT support
 
 **Need Help?**
@@ -834,8 +845,7 @@ Access URL: [{portal['url']}]({portal['url']})
 - For access permissions: Contact your manager or HR
 - For account setup: Contact HR at {self.hr_contact_email}
 
----
-*If you need access to additional systems not listed above, please let me know and I'll help you find the right portal.*"""
+If you need access to additional systems not listed above, please let me know and I'll help you find the right portal."""
     
     def generate_attestation_response(self, user_profile: Dict = None, get_signed_url=None) -> str:
         """Generate a clean, focused response for mandatory document attestation queries"""
@@ -851,11 +861,11 @@ Access URL: [{portal['url']}]({portal['url']})
             dept = user_profile.get('department', '')
             greeting = f"Hello {name}! "
             if role and dept:
-                greeting += f"As a {role} in {dept}, here are the mandatory documents you need to acknowledge for your onboarding process:"
+                greeting += f"As a {role} in {dept}, here are the mandatory documents you need to acknowledge for your {self.company_name} onboarding process:"
             else:
-                greeting += "Here are the mandatory documents you need to acknowledge for your onboarding process:"
+                greeting += f"Here are the mandatory documents you need to acknowledge for your {self.company_name} onboarding process:"
         else:
-            greeting = "Here are the mandatory documents you need to acknowledge for your onboarding process:"
+            greeting = f"Here are the mandatory documents you need to acknowledge for your {self.company_name} onboarding process:"
         
         # Build clean document list
         doc_list = ""
@@ -884,9 +894,8 @@ Access URL: [{portal['url']}]({portal['url']})
 3. Complete any required acknowledgments as instructed
 4. Keep copies for your records
 
-**Important:** These documents are mandatory for all new employees and must be acknowledged to complete your onboarding process.
+**Important:** These documents are mandatory for all new employees and must be acknowledged to complete your {self.company_name} onboarding process.
 
----
-*For questions about these documents, contact HR at {self.hr_contact_email} or {self.hr_phone}*"""
+For questions about these documents, contact HR at {self.hr_contact_email} or {self.hr_phone}"""
 
         return response
