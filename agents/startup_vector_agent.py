@@ -26,13 +26,16 @@ class StartupVectorChatAgent:
         # Store functions for later use
         self._list_files_in_folder = None
         self._get_signed_url = None
-        self._check_file_exists = None
-          # Track user sessions for personalized greetings
+        self._check_file_exists = None        # Track user sessions for personalized greetings
         self.user_sessions = {}
         
         # URL cache for fast document reference generation
         self.url_cache = {}  # {file_path: {'url': signed_url, 'expires_at': timestamp}}
         self.url_cache_duration = 3000  # 50 minutes (safe buffer from 1 hour expiration)
+        
+        # HR contact information for fallback scenarios
+        self.hr_contact_email = "hr.support@company.com"
+        self.hr_phone = "+1 (555) 123-4567"
         
         print("✅ Agent initialized - ready for preloading")
     
@@ -159,7 +162,8 @@ class StartupVectorChatAgent:
     def get_documents_hash(self, list_files_in_folder) -> str:
         """Generate hash to check if documents have changed"""
         all_files = []
-        for folder in ["policies/", "benefits/"]:
+        # Updated folder structure with parent "onboarding agent/" folder
+        for folder in ["onboarding agent/benefits/", "onboarding agent/expense/", "onboarding agent/onboarding/", "onboarding agent/policy/"]:
             try:
                 files = list_files_in_folder(folder)
                 all_files.extend([f for f in files if f.endswith('.pdf')])
@@ -199,7 +203,8 @@ class StartupVectorChatAgent:
                 name=self.collection_name,
                 metadata={"hnsw:space": "cosine"}
             )
-              # Load documents quickly
+            
+            # Load documents quickly
             documents = self.load_documents_parallel(list_files_in_folder, get_signed_url, check_file_exists)
             
             if not documents:
@@ -217,11 +222,23 @@ class StartupVectorChatAgent:
                 
                 for i, chunk in enumerate(chunks):
                     all_chunks.append(chunk)
+                    
+                    # Improved document type classification based on folder path
+                    doc_type = "document"  # default
+                    if "onboarding agent/policy/" in file_path.lower():
+                        doc_type = "policy"
+                    elif "onboarding agent/benefit" in file_path.lower():
+                        doc_type = "benefit"
+                    elif "onboarding agent/expense/" in file_path.lower():
+                        doc_type = "expense"
+                    elif "onboarding agent/onboarding/" in file_path.lower():
+                        doc_type = "onboarding"
+                    
                     all_metadatas.append({
                         "source": doc_name,
                         "file_path": file_path,  # Store the original GCS file path
                         "chunk_index": i,
-                        "doc_type": "policy" if "policy" in doc_name.lower() else "benefit",
+                        "doc_type": doc_type,
                         "documents_hash": current_hash if chunk_id == 0 else ""  # Store hash only once
                     })
                     all_ids.append(f"{doc_name}_chunk_{i}")
@@ -247,7 +264,8 @@ class StartupVectorChatAgent:
         """Load documents and store content with file paths"""
         documents = {}
         
-        for folder in ["policies/", "benefits/"]:
+        # Updated folder structure with parent "onboarding agent/" folder
+        for folder in ["onboarding agent/benefits/", "onboarding agent/expense/", "onboarding agent/onboarding/", "onboarding agent/policy/"]:
             try:
                 files = list_files_in_folder(folder)
                 print(f"📁 Processing {len(files)} files from {folder}")
@@ -314,8 +332,7 @@ class StartupVectorChatAgent:
                 greeting_words = ['hi', 'hello', 'hey', 'good morning', 'good afternoon', 'good evening']
                 if any(word in question.lower() for word in greeting_words) and len(question.split()) <= 3:
                     return welcome_message
-            
-            # Check if initialized, if not try quick initialization
+              # Check if initialized, if not try quick initialization
             if not self.is_initialized:
                 with self.initialization_lock:
                     if not self.is_initialized:
@@ -324,37 +341,32 @@ class StartupVectorChatAgent:
                         if not self.initialize_vector_store_fast(list_files_in_folder, get_signed_url, check_file_exists):
                             return "I'm currently initializing my knowledge base. Please try again in a moment, and I'll be ready to help you with your HR questions!"
                         self.is_initialized = True
-            
-            # Fast search
+              # Fast search
             relevant_content = self.search_relevant_content_fast(question)
             
             if not relevant_content:
-                # Instead of referring to HR, provide helpful automated response
-                fallback_responses = {
-                    'benefit': "I can help you with benefit-related questions! Try asking about health insurance, dental coverage, retirement plans, or vacation policies.",
-                    'policy': "I can assist with company policy questions! Ask me about dress code, remote work, time off, or code of conduct.",
-                    'expense': "I can help with expense-related queries! Try asking about expense limits, reimbursement processes, or travel policies.",
-                    'payroll': "For payroll questions, I can help with general information about pay schedules and deduction policies.",
-                    'default': "I'm here to help with questions about company policies, benefits, and procedures. Could you please rephrase your question or be more specific about what you'd like to know?"
-                }
+                # Professional fallback with HR contact info
+                fallback_message = f"""I apologize, but I couldn't find specific information related to your question in our current HR knowledge base.
+
+**For personalized assistance, please contact our HR team:**
+📧 Email: {self.hr_contact_email}
+📞 Phone: {self.hr_phone}
+🕒 Business Hours: Monday-Friday, 9:00 AM - 5:00 PM EST
+
+I can help you with questions about:
+• Company policies and procedures
+• Employee benefits and insurance
+• Payroll and compensation matters
+• Time off and leave policies
+• Workplace guidelines and safety protocols
+
+Please feel free to rephrase your question or ask about any of these topics."""
                 
-                question_lower = question.lower()
-                for category in fallback_responses:
-                    if category in question_lower:
-                        response = fallback_responses[category]
-                        if is_first_message and supabase_client:
-                            user_profile = self.get_user_profile(email, supabase_client)
-                            welcome = self.generate_welcome_message(user_profile)
-                            return f"{welcome}\n\n{response}"
-                        return response
-                
-                # Default fallback
-                response = fallback_responses['default']
                 if is_first_message and supabase_client:
                     user_profile = self.get_user_profile(email, supabase_client)
                     welcome = self.generate_welcome_message(user_profile)
-                    return f"{welcome}\n\n{response}"
-                return response
+                    return f"{welcome}\n\n{fallback_message}"
+                return fallback_message
             
             # Create minimal context
             context = ""
@@ -363,8 +375,7 @@ class StartupVectorChatAgent:
                 content_preview = item['content'][:800] + "..." if len(item['content']) > 800 else item['content']
                 context += f"From {item['source']}: {content_preview}\n\n"
                 print(f"🎯 Using: {item['source']}")
-            
-            # Improved prompt for better automated responses
+              # Original prompt without keyword filtering
             prompt = f"""You are an AI HR Assistant providing automated support. Based on the company information below, answer the employee question in a helpful and professional manner.
 
 Question: {question}
@@ -378,7 +389,7 @@ Instructions:
 - Reference the source document when appropriate
 - Keep the response concise (2-4 sentences)
 - Act as an automated HR system, not as a human representative
-- Do not suggest contacting HR - you ARE the HR automation system
+- For complex or sensitive matters, suggest contacting HR directly at {self.hr_contact_email}
 
 Answer:"""
 
@@ -401,14 +412,19 @@ Answer:"""
                         })
                         unique_files.add(file_path)
             
-            # Add welcome message for first-time users
+            # Start with the response content
             final_response = response.content
             
             # Add reference document links if any were found
             if referenced_documents:
-                final_response += "\n\n📎 **Reference Documents:**\n"
+                final_response += "\n\n📎 **Reference Documents:**"
                 for doc in referenced_documents:
-                    final_response += f"• [{doc['name']}]({doc['url']})\n"
+                    if doc.get('url'):  # Only add link if URL exists
+                        final_response += f"\n [{doc['name']}]({doc['url']})"
+                    else:  # If no URL, just show the document name
+                        final_response += f"\n {doc['name']} (Document available through HR)"
+              # Add HR contact info footer for complex queries
+            final_response += f"\n\n---\n*For additional assistance, contact HR at {self.hr_contact_email} or {self.hr_phone}*"
             
             if is_first_message and supabase_client:
                 user_profile = self.get_user_profile(email, supabase_client)
@@ -422,8 +438,13 @@ Answer:"""
             
         except Exception as e:
             print(f"❌ Error: {e}")
-            return "I'm experiencing technical difficulties. Please try again in a moment, and I'll do my best to help you with your HR questions."
-    
+            return f"""I'm experiencing technical difficulties at the moment. Please try again in a moment.
+
+**For immediate assistance, please contact our HR team:**
+📧 Email: {self.hr_contact_email}
+📞 Phone: {self.hr_phone}
+🕒 Business Hours: Monday-Friday, 9:00 AM - 5:00 PM EST"""
+
     def get_user_profile(self, email: str, supabase_client):
         """Get user profile for personalized greeting"""
         try:

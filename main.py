@@ -34,6 +34,7 @@ class ChatRequest(BaseModel):
 class DocumentAcknowledgmentRequest(BaseModel):
     email: str
     document_name: str
+    # ✅ Removed acknowledged field since it doesn't exist in database
 
 class DocumentAcknowledgmentResponse(BaseModel):
     success: bool
@@ -298,17 +299,21 @@ async def fetch_expenses(req: ExpenseFetchRequest):
 async def list_available_documents():
     """List all available documents in the GCS bucket"""
     try:
-        policy_files = gcs_manager.list_files_in_folder("policies/")
-        benefit_files = gcs_manager.list_files_in_folder("benefits/")
-        expense_files = gcs_manager.list_files_in_folder("expenses/")
+        # Updated to match your nested folder structure
+        policy_files = gcs_manager.list_files_in_folder("onboarding agent/policy/")
+        benefit_files = gcs_manager.list_files_in_folder("onboarding agent/benefits/")
+        expense_files = gcs_manager.list_files_in_folder("onboarding agent/expense/")
+        onboarding_files = gcs_manager.list_files_in_folder("onboarding agent/onboarding/")
 
         documents = {
             "policies": [f.split('/')[-1] for f in policy_files if f.endswith('.pdf')],
             "benefits": [f.split('/')[-1] for f in benefit_files if f.endswith('.pdf')],
             "expenses": [f.split('/')[-1] for f in expense_files if f.endswith('.pdf')],
+            "onboarding": [f.split('/')[-1] for f in onboarding_files if f.endswith('.pdf')],
             "total_count": len([f for f in policy_files if f.endswith('.pdf')]) + 
                           len([f for f in benefit_files if f.endswith('.pdf')]) +
-                          len([f for f in expense_files if f.endswith('.pdf')])
+                          len([f for f in expense_files if f.endswith('.pdf')]) +
+                          len([f for f in onboarding_files if f.endswith('.pdf')])
         }
 
         return {
@@ -333,23 +338,23 @@ async def acknowledge_document(req: DocumentAcknowledgmentRequest):
     """
     try:
         supabase = get_supabase_client()
-        
-        # Prepare the acknowledgment data
+          # Prepare the acknowledgment data
         acknowledgment_data = {
             "email": req.email,
             "document_name": req.document_name,
             "acknowledged_at": datetime.datetime.now().isoformat(),
-            "created_at": datetime.datetime.now().isoformat(),
-            "acknowledged":req.acknowledged
+            "created_at": datetime.datetime.now().isoformat()
+            # ✅ Removed the acknowledged field since it doesn't exist in DB
         }
         
         # Insert into the document_acknowledgments table
         response = supabase.table("document_acknowledgments").insert(acknowledgment_data).execute()
         
         if response.data:
-            acknowledgment_id = response.data[0].get("id") if response.data[0] else None
+            acknowledgment_id = response.data[0].get("id") if response.data[0] else None            
             return DocumentAcknowledgmentResponse(
                 success=True,
+                acknowledged=True,  # ✅ Set to True in response since user is acknowledging
                 message=f"Document '{req.document_name}' acknowledgment recorded successfully",
                 acknowledgment_id=str(acknowledgment_id) if acknowledgment_id else None,
                 timestamp=acknowledgment_data["acknowledged_at"]

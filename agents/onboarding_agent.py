@@ -59,14 +59,12 @@ class OnboardingAgent:
                 .eq("email", email) \
                 .execute()
             
-            # Create a dictionary for quick lookup
+            # Store acknowledgments with original keys (no normalization)
             acknowledgments = {}
             if response.data:
                 for ack in response.data:
                     doc_name = ack.get("document_name", "")
-                    # Remove .pdf extension for matching
-                    doc_key = doc_name.replace(".pdf", "")
-                    acknowledgments[doc_key] = {
+                    acknowledgments[doc_name] = {
                         "acknowledged": True,
                         "acknowledged_at": ack.get("acknowledged_at")
                     }
@@ -75,6 +73,34 @@ class OnboardingAgent:
         except Exception as e:
             print(f"Error fetching user acknowledgments: {e}")
             return {}
+
+    def find_document_acknowledgment(self, pdf_name: str, doc_title: str, user_acknowledgments: dict) -> dict:
+        """Find acknowledgment using multiple matching strategies."""
+        
+        # Strategy 1: Exact match with doc_title (most common)
+        if doc_title in user_acknowledgments:
+            return user_acknowledgments[doc_title]
+        
+        # Strategy 2: Exact match with pdf_name
+        if pdf_name in user_acknowledgments:
+            return user_acknowledgments[pdf_name]
+        
+        # Strategy 3: Case-insensitive matching
+        doc_title_lower = doc_title.lower() if doc_title else ""
+        pdf_name_lower = pdf_name.lower() if pdf_name else ""
+        
+        for ack_key, ack_data in user_acknowledgments.items():
+            ack_key_lower = ack_key.lower()
+            if doc_title_lower == ack_key_lower or pdf_name_lower == ack_key_lower:
+                return ack_data
+        
+        # Strategy 4: Partial matching
+        for ack_key, ack_data in user_acknowledgments.items():
+            if (doc_title and doc_title.lower() in ack_key.lower()) or \
+               (pdf_name and pdf_name.lower() in ack_key.lower()):
+                return ack_data
+        
+        return {}
 
     def process_request(self, req: OnboardingFetchRequest, supabase_client, get_signed_url, list_files_in_folder, check_file_exists) -> OnboardingFetchResponse:
         """Process a Onboarding document fetch request."""
@@ -98,21 +124,20 @@ class OnboardingAgent:
             for doc in documents:
                 title = doc.get("doc_title", "Untitled Document")
                 folder_path = doc.get("gcs_url", "")
-                pdf_name = doc.get("pdf_name", "")
-
-                # Construct the file path
+                pdf_name = doc.get("pdf_name", "")                # Construct the file path
                 file_path = f"{folder_path}/{pdf_name}" if folder_path and pdf_name else ""
 
                 # Get signed URL only if file path exists
                 url = ""
                 if file_path and check_file_exists(file_path):
                     url = get_signed_url(file_path)
-
+                
                 # Check if the document is acknowledged by the user
-                doc_key = pdf_name.replace(".pdf", "")  # Match the key used in acknowledgments
-                acknowledgment = user_acknowledgments.get(doc_key, {})
+                acknowledgment = self.find_document_acknowledgment(pdf_name, title, user_acknowledgments)
                 acknowledged = acknowledgment.get("acknowledged", False)
-                acknowledged_at = acknowledgment.get("acknowledged_at")                # Create document with acknowledgment status
+                acknowledged_at = acknowledgment.get("acknowledged_at")
+                
+                # Create document with acknowledgment status
                 formatted_docs.append(Document(
                     title=title,
                     url=url,
