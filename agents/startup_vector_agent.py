@@ -551,9 +551,8 @@ class StartupVectorChatAgent:
                                 # 🆕 Add assistant response to chat history
                                 self.add_to_chat_history(email, 'assistant', init_response)
                                 return self.create_response_with_actions(init_response, question, email, user_profile)
-                            self.is_initialized = True
-                  # Generate attestation-specific response
-                attestation_response = self.generate_attestation_response(user_profile, get_signed_url)
+                            self.is_initialized = True                  # Generate enhanced attestation-specific response with acknowledgment status
+                attestation_response = self.generate_enhanced_attestation_response(user_profile, get_signed_url, email, supabase_client)
                 # 🆕 Add assistant response to chat history
                 self.add_to_chat_history(email, 'assistant', attestation_response)
                 return self.create_response_with_actions(attestation_response, question, email, user_profile)
@@ -632,6 +631,7 @@ Please feel free to rephrase your question or ask about any of these topics."""
                         folder_context += f"\n📁 {folder_def.get('name', 'Unknown')}: {folder_def.get('description', '')}"# Enhanced prompt for detailed responses with complete user context and folder definitions
             user_context = ""
             personalized_greeting = ""
+            acknowledgment_context = ""
             
             if supabase_client:
                 if not user_profile:
@@ -661,6 +661,9 @@ Employee Profile Context:
                             personalized_greeting = f"Start your response with: 'Hello {name}! As a {role} in {dept}, here's what you need to know:'"
                         else:
                             personalized_greeting = f"Start your response with: 'Hello {name}! Here's what you need to know:'"
+
+                # 🆕 Get document acknowledgment status for LLM context
+                acknowledgment_context = self.format_acknowledgment_context_for_llm(email, supabase_client, get_signed_url)
 
             mandatory_notice = ""
             if mandatory_docs:                
@@ -692,6 +695,8 @@ Document Folder Definitions:{folder_context}
 
 {mandatory_notice}
 
+{acknowledgment_context}
+
 Company Information:
 {context}
 
@@ -701,6 +706,12 @@ Instructions:
 - Use the employee profile context to personalize your response when relevant
 - Pay special attention to folder context - understand what type of information each folder contains
 - For MANDATORY ONBOARDING documents, emphasize that these are required for all new employees
+- When discussing mandatory onboarding documents, ALWAYS reference the user's acknowledgment status
+- If documents are already acknowledged, mention this and congratulate the user on completion
+- If documents are pending acknowledgment, emphasize the requirement to review and acknowledge them
+- Provide specific counts of acknowledged vs pending documents when relevant
+- For attestation/acknowledgment queries, prioritize showing what's completed vs what's remaining
+- Use the acknowledgment status to provide personalized guidance on next steps
 - When referencing onboarding folder documents, mention they are mandatory acknowledgment requirements
 - Address the employee by their first name when appropriate
 - Tailor information based on their role, department, employment type, and seniority
@@ -812,6 +823,215 @@ If the issue persists, you may want to contact your HR team for assistance."""
         except Exception as e:
             print(f"Error fetching user profile: {e}")
             return None
+
+    def get_user_document_acknowledgments(self, email: str, supabase_client) -> Dict[str, Any]:
+        """Get user's document acknowledgment status from Supabase"""
+        try:
+            response = supabase_client.table("document_acknowledgments") \
+                .select("*") \
+                .eq("email", email) \
+                .order("acknowledged_at", desc=True) \
+                .execute()
+            
+            acknowledgments = {}
+            acknowledgment_details = []
+            
+            if response.data:
+                for ack in response.data:
+                    doc_name = ack['document_name']
+                    acknowledgments[doc_name] = {
+                        'acknowledged': True,
+                        'acknowledged_at': ack['acknowledged_at'],
+                        'acknowledgment_id': ack['id']
+                    }
+                    acknowledgment_details.append({
+                        'document_name': doc_name,
+                        'acknowledged_at': ack['acknowledged_at'],
+                        'acknowledgment_id': ack['id']
+                    })
+            
+            return {
+                'acknowledgments': acknowledgments,
+                'acknowledgment_details': acknowledgment_details,
+                'total_acknowledged': len(acknowledgments)
+            }
+        except Exception as e:
+            print(f"Error fetching document acknowledgments: {e}")
+            return {
+                'acknowledgments': {},
+                'acknowledgment_details': [],
+                'total_acknowledged': 0
+            }
+
+    def get_document_status_summary(self, email: str, supabase_client, get_signed_url) -> Dict[str, Any]:
+        """Get comprehensive document status including acknowledged vs pending documents"""
+        try:
+            # Get all mandatory documents
+            all_mandatory_docs = self.get_all_mandatory_documents(get_signed_url)
+            
+            # Get user's acknowledgments
+            user_acknowledgments = self.get_user_document_acknowledgments(email, supabase_client)
+            
+            acknowledged_docs = []
+            pending_docs = []
+            
+            # Check status of each mandatory document
+            for doc in all_mandatory_docs:
+                doc_name = doc['source']
+                if doc_name in user_acknowledgments['acknowledgments']:
+                    # Document is acknowledged
+                    ack_info = user_acknowledgments['acknowledgments'][doc_name]
+                    acknowledged_docs.append({
+                        **doc,
+                        'acknowledged': True,
+                        'acknowledged_at': ack_info['acknowledged_at'],
+                        'acknowledgment_id': ack_info['acknowledgment_id']
+                    })
+                else:
+                    # Document is pending acknowledgment
+                    pending_docs.append({
+                        **doc,
+                        'acknowledged': False,
+                        'status': 'pending_acknowledgment'
+                    })
+            
+            return {
+                'all_documents': all_mandatory_docs,
+                'acknowledged_documents': acknowledged_docs,
+                'pending_documents': pending_docs,
+                'total_documents': len(all_mandatory_docs),
+                'total_acknowledged': len(acknowledged_docs),
+                'total_pending': len(pending_docs),
+                'completion_percentage': (len(acknowledged_docs) / len(all_mandatory_docs) * 100) if all_mandatory_docs else 100,
+                'user_acknowledgments': user_acknowledgments
+            }
+        except Exception as e:
+            print(f"Error getting document status summary: {e}")
+            return {
+                'all_documents': [],
+                'acknowledged_documents': [],
+                'pending_documents': [],
+                'total_documents': 0,
+                'total_acknowledged': 0,
+                'total_pending': 0,
+                'completion_percentage': 0,
+                'user_acknowledgments': {'acknowledgments': {}, 'acknowledgment_details': [], 'total_acknowledged': 0}
+            }
+
+    def format_acknowledgment_context_for_llm(self, email: str, supabase_client, get_signed_url) -> str:
+        """Format document acknowledgment status for LLM context"""
+        try:
+            doc_status = self.get_document_status_summary(email, supabase_client, get_signed_url)
+            
+            if doc_status['total_documents'] == 0:
+                return ""
+            
+            context = f"\n\n📋 **DOCUMENT ACKNOWLEDGMENT STATUS FOR {email.upper()}:**\n"
+            context += f"📊 Progress: {doc_status['total_acknowledged']}/{doc_status['total_documents']} documents acknowledged ({doc_status['completion_percentage']:.1f}% complete)\n\n"
+            
+            if doc_status['acknowledged_documents']:
+                context += "✅ **ACKNOWLEDGED DOCUMENTS:**\n"
+                for doc in doc_status['acknowledged_documents']:
+                    ack_date = doc['acknowledged_at'][:10] if doc['acknowledged_at'] else 'Unknown'
+                    context += f"   • {doc['source']} (acknowledged on {ack_date})\n"
+                context += "\n"
+            
+            if doc_status['pending_documents']:
+                context += "⏳ **PENDING ACKNOWLEDGMENT (REQUIRED):**\n"
+                for doc in doc_status['pending_documents']:
+                    context += f"   • {doc['source']} - REQUIRES ACKNOWLEDGMENT\n"
+                context += "\n"
+            
+            if doc_status['total_pending'] > 0:
+                context += f"⚠️ **IMPORTANT:** {doc_status['total_pending']} mandatory document(s) still require acknowledgment to complete onboarding.\n"
+            else:
+                context += "🎉 **ALL MANDATORY DOCUMENTS ACKNOWLEDGED:** Onboarding documentation requirements are complete!\n"
+            
+            return context
+        
+        except Exception as e:
+            print(f"Error formatting acknowledgment context: {e}")
+            return ""
+
+    def generate_enhanced_attestation_response(self, user_profile: Dict = None, get_signed_url=None, email: str = "", supabase_client=None) -> str:
+        """Generate enhanced attestation response with acknowledgment status"""
+        
+        # Get document status summary
+        if supabase_client:
+            doc_status = self.get_document_status_summary(email, supabase_client, get_signed_url)
+        else:
+            # Fallback to basic mandatory docs if no Supabase client
+            mandatory_docs = self.get_all_mandatory_documents(get_signed_url)
+            doc_status = {
+                'all_documents': mandatory_docs,
+                'acknowledged_documents': [],
+                'pending_documents': mandatory_docs,
+                'total_documents': len(mandatory_docs),
+                'total_acknowledged': 0,
+                'total_pending': len(mandatory_docs),
+                'completion_percentage': 0
+            }
+        
+        # Personalized greeting
+        name = ""
+        if user_profile and user_profile.get('full_name'):
+            name = f" {user_profile['full_name'].split()[0]}"
+        else:
+            name = ""
+        
+        # Status-aware greeting
+        if doc_status['total_pending'] == 0:
+            greeting = f"Hello{name}! 🎉 Excellent news - you've completed all mandatory onboarding document acknowledgments!"
+        else:
+            greeting = f"Hello{name}! Here's your current onboarding document status:"
+        
+        # Build status summary
+        status_summary = f"""
+**📊 Onboarding Progress: {doc_status['total_acknowledged']}/{doc_status['total_documents']} documents ({doc_status['completion_percentage']:.1f}% complete)**
+"""
+        
+        # Build acknowledged documents section
+        acknowledged_section = ""
+        if doc_status['acknowledged_documents']:
+            acknowledged_section = "\n**✅ Completed Acknowledgments:**\n"
+            for doc in doc_status['acknowledged_documents']:
+                ack_date = doc['acknowledged_at'][:10] if doc['acknowledged_at'] else 'Unknown'
+                acknowledged_section += f"• {doc['source']} ✓ (acknowledged {ack_date})\n"
+        
+        # Build pending documents section
+        pending_section = ""
+        pending_links = ""
+        if doc_status['pending_documents']:
+            pending_section = "\n**⏳ Pending Acknowledgments (Required):**\n"
+            pending_links = "\n**📎 Documents Requiring Acknowledgment:**\n"
+            
+            for i, doc in enumerate(doc_status['pending_documents'], 1):
+                pending_section += f"{i}. {doc['source']} - **REQUIRES ACKNOWLEDGMENT**\n"
+                if doc.get('signed_url'):
+                    pending_links += f"[📄 {doc['source']}]({doc['signed_url']})\n"
+        
+        # Next steps
+        next_steps = ""
+        if doc_status['total_pending'] > 0:
+            next_steps = f"""
+**Next Steps:**
+1. Review each pending document carefully
+2. Contact HR if you have questions about any content
+3. Complete acknowledgments to finish your onboarding
+4. Keep copies for your records
+
+**Important:** {doc_status['total_pending']} document(s) still require acknowledgment to complete your {self.company_name} onboarding process."""
+        else:
+            next_steps = f"""
+**🎉 All Done!** You've successfully acknowledged all mandatory onboarding documents for {self.company_name}. Your onboarding documentation requirements are complete!
+
+If you need to reference any documents later, contact your HR department."""
+
+        response = f"""{greeting}
+
+{status_summary}{acknowledged_section}{pending_section}{pending_links}{next_steps}"""
+
+        return response
     
     def generate_welcome_message(self, user_profile: Dict = None) -> str:
         """Generate personalized welcome message"""
