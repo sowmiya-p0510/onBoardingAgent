@@ -29,17 +29,18 @@ class StartupVectorChatAgent:
         self._get_signed_url = None
         self._check_file_exists = None        # Track user sessions for personalized greetings
         self.user_sessions = {}
-        
-        # 🆕 STEP 1: Unlimited in-memory chat history storage
+          # 🆕 STEP 1: Unlimited in-memory chat history storage
         self.chat_history = {}  # {email: [{'role': 'user'/'assistant', 'content': 'message', 'timestamp': datetime}, ...]}
         self.chat_history_lock = threading.Lock()  # Thread safety for concurrent access
+          # 🆕 NEW: Track suggested follow-up actions per user to prevent repetition
+        self.user_suggested_actions = {}  # {email: set(action_text, ...)} - tracks all suggested actions per user
+        self.user_suggested_actions_lock = threading.Lock()  # Thread safety for concurrent access
         
-        # URL cache for fast document reference generation
+        # Configuration for follow-up actions (no length constraints for natural conversation)
+        self.max_tracked_actions = 50  # Maximum actions to track per user (to prevent memory bloat)
+          # URL cache for fast document reference generation
         self.url_cache = {}  # {file_path: {'url': signed_url, 'expires_at': timestamp}}
         self.url_cache_duration = 3000  # 50 minutes (safe buffer from 1 hour expiration)
-          # HR contact information for fallback scenarios
-        self.hr_contact_email = "hr.support@fusefy.ai"
-        self.hr_phone = "+1 (555) 123-4567"
         
         # Company name for consistent branding
         self.company_name = "Fusefy"
@@ -107,8 +108,7 @@ class StartupVectorChatAgent:
                 "keywords": ["database", "db", "sql", "mysql", "postgresql", "data access"]
             }
         }
-        
-        # Folder definitions for better LLM understanding
+          # Folder definitions for better LLM understanding
         self.folder_definitions = {
             "onboarding agent/benefits/": {
                 "name": "Employee Benefits",
@@ -135,8 +135,7 @@ class StartupVectorChatAgent:
                 "description": "Official company policies covering workplace conduct, compliance requirements, security protocols, and organizational guidelines that all employees must follow.",
                 "content_type": "Corporate policies and compliance documentation",
                 "use_cases": ["code of conduct", "security policies", "workplace guidelines", "compliance requirements", "disciplinary procedures"]
-            }
-        }
+            }        }
         
         print("✅ Agent initialized - ready for preloading")
     
@@ -257,8 +256,7 @@ class StartupVectorChatAgent:
                 goal="Provide quick, accurate answers about Fusefy policies and procedures",
                 backstory=f"You are a helpful HR assistant for {self.company_name}, providing support to employees with company policies, benefits, and procedures.",
                 verbose=False,
-                allow_delegation=False,
-                llm=self.llm
+                allow_delegation=False,                llm=self.llm
             )
         return self._agent
     
@@ -266,24 +264,32 @@ class StartupVectorChatAgent:
         """Lightning-fast URL generation with intelligent caching"""
         current_time = time.time()
         
+        print(f"🔗 URL request for: {file_path}")
+        
         # Check cache first (microsecond lookup)
         if file_path in self.url_cache:
             cache_entry = self.url_cache[file_path]
             if current_time < cache_entry['expires_at']:
+                print(f"🔗 Cache hit for: {file_path}")
                 return cache_entry['url']  # Instant return from cache
         
         # Generate new URL only if needed
         try:
+            print(f"🔗 Generating new URL for: {file_path}")
             new_url = get_signed_url(file_path, expiration=3600)  # 1 hour
             if new_url:
                 self.url_cache[file_path] = {
                     'url': new_url,
                     'expires_at': current_time + self.url_cache_duration
                 }
+                print(f"🔗 Successfully generated URL for: {file_path}")
                 return new_url
+            else:
+                print(f"🔗 get_signed_url returned empty/None for: {file_path}")
         except Exception as e:
-            print(f"URL generation error for {file_path}: {e}")
+            print(f"🔗 URL generation error for {file_path}: {e}")
         
+        print(f"🔗 Failed to generate URL for: {file_path}")
         return ""
     
     def extract_text_from_pdf_fast(self, pdf_url: str) -> str:
@@ -374,8 +380,7 @@ class StartupVectorChatAgent:
             if not documents:
                 print("❌ No documents found")
                 return False
-            
-            # Process into chunks
+              # Process into chunks
             all_chunks = []
             all_metadatas = []
             all_ids = []
@@ -386,8 +391,7 @@ class StartupVectorChatAgent:
                 
                 for i, chunk in enumerate(chunks):
                     all_chunks.append(chunk)
-                    
-                    # Improved document type classification based on folder path
+                      # Improved document type classification based on folder path
                     doc_type = "document"  # default
                     is_mandatory = False
                     
@@ -420,7 +424,8 @@ class StartupVectorChatAgent:
                 self.collection.add(
                     documents=all_chunks,
                     metadatas=all_metadatas,
-                    ids=all_ids                )
+                    ids=all_ids
+                )
                 
                 print(f"✅ Vector store created: {len(all_chunks)} chunks from {len(documents)} docs")
                 return True
@@ -470,13 +475,16 @@ class StartupVectorChatAgent:
             results = self.collection.query(
                 query_texts=[question],
                 n_results=3,  # Increased from 2 to 3 for better coverage
-                include=['documents', 'metadatas']
-            )
+                include=['documents', 'metadatas']            )
             
             relevant_content = []
             for i, doc in enumerate(results['documents'][0]):
                 metadata = results['metadatas'][0][i]
-                relevant_content.append({                    'content': doc,
+                
+                print(f"🔍 Search result {i}: {metadata.get('source')} - file_path: {metadata.get('file_path')}")
+                
+                relevant_content.append({
+                    'content': doc,
                     'source': metadata['source'],
                     'file_path': metadata.get('file_path'),
                     'doc_type': metadata.get('doc_type'),
@@ -486,13 +494,14 @@ class StartupVectorChatAgent:
                     'is_mandatory': metadata.get('is_mandatory', False)
                 })
             
+            print(f"🔍 Total relevant content items: {len(relevant_content)}")
             return relevant_content
             
         except Exception as e:
             print(f"❌ Search error: {e}")
             return []
     
-    def process_chat_request(self, question: str, email: str, list_files_in_folder, get_signed_url, check_file_exists, supabase_client=None) -> str:
+    def process_chat_request(self, question: str, email: str, list_files_in_folder, get_signed_url, check_file_exists, supabase_client=None) -> Dict[str, Any]:
         """Fast chat processing with unlimited in-memory chat history"""
         start_time = time.time()
         
@@ -504,35 +513,34 @@ class StartupVectorChatAgent:
             is_first_message = email not in self.user_sessions
             user_profile = None
             
-            if is_first_message and supabase_client:
-                # Get user profile for personalized greeting
+            if is_first_message and supabase_client:                # Get user profile for personalized greeting
                 user_profile = self.get_user_profile(email, supabase_client)
-                self.user_sessions[email] = True                # If it's a simple greeting, return welcome message only
+                self.user_sessions[email] = True
+                
+                # If it's a simple greeting, return welcome message only
                 greeting_words = ['hi', 'hello', 'hey', 'good morning', 'good afternoon', 'good evening']
                 if any(word in question.lower() for word in greeting_words) and len(question.split()) <= 3:
                     welcome_response = self.generate_welcome_message(user_profile)
                     # 🆕 Add assistant response to chat history
                     self.add_to_chat_history(email, 'assistant', welcome_response)
-                    return welcome_response
+                    return self.create_response_with_actions(welcome_response, question, email, user_profile)
               # Check if this is an access-related question first (before document search)
             detected_access = self.detect_access_request(question)
             
             if detected_access["is_access_request"]:
                 # Get user profile for personalization if not already retrieved
                 if not user_profile and supabase_client:
-                    user_profile = self.get_user_profile(email, supabase_client)
-                  # Generate access-specific response
+                    user_profile = self.get_user_profile(email, supabase_client)                # Generate access-specific response
                 access_response = self.generate_access_response(question, detected_access, user_profile)
                 # 🆕 Add assistant response to chat history
                 self.add_to_chat_history(email, 'assistant', access_response)
-                return access_response
+                return self.create_response_with_actions(access_response, question, email, user_profile)
             
             # Check if this is an attestation query (before document search)
             if self.detect_attestation_query(question):
                 # Get user profile if not already retrieved
                 if not user_profile and supabase_client:
-                    user_profile = self.get_user_profile(email, supabase_client)
-                  # Check if initialized for document access
+                    user_profile = self.get_user_profile(email, supabase_client)                # Check if initialized for document access
                 if not self.is_initialized:
                     with self.initialization_lock:
                         if not self.is_initialized:
@@ -542,15 +550,14 @@ class StartupVectorChatAgent:
                                 init_response = "I'm currently initializing my knowledge base. Please try again in a moment, and I'll be ready to help you with your HR questions!"
                                 # 🆕 Add assistant response to chat history
                                 self.add_to_chat_history(email, 'assistant', init_response)
-                                return init_response
+                                return self.create_response_with_actions(init_response, question, email, user_profile)
                             self.is_initialized = True
-                
-                # Generate attestation-specific response
-                attestation_response = self.generate_attestation_response(user_profile, get_signed_url)                # 🆕 Add assistant response to chat history
+                  # Generate attestation-specific response
+                attestation_response = self.generate_attestation_response(user_profile, get_signed_url)
+                # 🆕 Add assistant response to chat history
                 self.add_to_chat_history(email, 'assistant', attestation_response)
-                return attestation_response
-            
-            # Check if initialized, if not try quick initialization
+                return self.create_response_with_actions(attestation_response, question, email, user_profile)
+              # Check if initialized, if not try quick initialization
             if not self.is_initialized:
                 with self.initialization_lock:
                     if not self.is_initialized:
@@ -560,19 +567,14 @@ class StartupVectorChatAgent:
                             init_response = "I'm currently initializing my knowledge base. Please try again in a moment, and I'll be ready to help you with your HR questions!"
                             # 🆕 Add assistant response to chat history
                             self.add_to_chat_history(email, 'assistant', init_response)
-                            return init_response
+                            return self.create_response_with_actions(init_response, question, email, user_profile)
                         self.is_initialized = True
-            
-            # Regular search for other queries
+              # Regular search for other queries
             relevant_content = self.search_relevant_content_fast(question)
             
-            if not relevant_content:                # Professional fallback with HR contact info
+            if not relevant_content:
+                # Professional fallback without hardcoded contact info
                 fallback_message = f"""I apologize, but I couldn't find specific information related to your question in our current HR knowledge base.
-
-**For personalized assistance, please contact our HR team:**
-📧 Email: {self.hr_contact_email}
-📞 Phone: {self.hr_phone}
-🕒 Business Hours: Monday-Friday, 9:00 AM - 5:00 PM EST
 
 I can help you with questions about:
 • Company policies and procedures
@@ -582,17 +584,18 @@ I can help you with questions about:
 • Workplace guidelines and safety protocols
 
 Please feel free to rephrase your question or ask about any of these topics."""
-                  # Only add welcome for first-time users with no content found
+                
+                # Only add welcome for first-time users with no content found
                 if is_first_message and user_profile:
                     welcome = self.generate_welcome_message(user_profile)
                     final_fallback = f"{welcome}\n\n{fallback_message}"
                     # 🆕 Add assistant response to chat history
                     self.add_to_chat_history(email, 'assistant', final_fallback)
-                    return final_fallback
+                    return self.create_response_with_actions(final_fallback, question, email, user_profile)
                 
                 # 🆕 Add assistant response to chat history
                 self.add_to_chat_history(email, 'assistant', fallback_message)
-                return fallback_message
+                return self.create_response_with_actions(fallback_message, question, email, user_profile)
               # Create enhanced context with folder information
             context = ""
             mandatory_docs = []
@@ -609,9 +612,7 @@ Please feel free to rephrase your question or ask about any of these topics."""
                     mandatory_docs.append(item['source'])
                 
                 context += f"{folder_info}From {item['source']}: {content_preview}\n\n"
-                print(f"🎯 Using: {item['source']} ({item.get('folder_name', 'Unknown')})")
-            
-            # Create folder definitions context
+                print(f"🎯 Using: {item['source']} ({item.get('folder_name', 'Unknown')})")            # Create folder definitions context
             if relevant_content:
                 unique_folders = set()
                 for item in relevant_content:
@@ -628,7 +629,7 @@ Please feel free to rephrase your question or ask about any of these topics."""
                     if folder_path and folder_path not in unique_folders:
                         unique_folders.add(folder_path)
                         folder_def = self.folder_definitions.get(folder_path, {})
-                        folder_context += f"\n📁 {folder_def.get('name', 'Unknown')}: {folder_def.get('description', '')}"              # Enhanced prompt for detailed responses with complete user context and folder definitions
+                        folder_context += f"\n📁 {folder_def.get('name', 'Unknown')}: {folder_def.get('description', '')}"# Enhanced prompt for detailed responses with complete user context and folder definitions
             user_context = ""
             personalized_greeting = ""
             
@@ -725,19 +726,24 @@ Instructions:
 
 Provide a complete and informative response that fully addresses the question with personalized context and proper folder categorization:"""
 
-            response = self.llm.invoke(prompt)
-              # Generate URLs for referenced documents (with support for pre-generated URLs)
+            response = self.llm.invoke(prompt)            # Generate URLs for referenced documents (with support for pre-generated URLs)
             referenced_documents = []
             unique_files = set()
             
+            print(f"🔗 Processing {len(relevant_content)} items for reference documents...")
+            
             for item in relevant_content:
                 file_path = item.get('file_path')
+                print(f"🔗 Processing item: {item.get('source')} with file_path: {file_path}")
+                
                 if file_path and file_path not in unique_files:
                     # Check if URL is already generated (for attestation queries)
                     signed_url = item.get('signed_url')
                     if not signed_url:
+                        print(f"🔗 Generating signed URL for: {file_path}")
                         # Generate URL if not already available
                         signed_url = self.get_cached_signed_url(file_path, get_signed_url)
+                        print(f"🔗 Generated URL: {signed_url[:50]}..." if signed_url else "🔗 Failed to generate URL")
                     
                     if signed_url:
                         referenced_documents.append({
@@ -746,39 +752,51 @@ Provide a complete and informative response that fully addresses the question wi
                             'type': item.get('doc_type', 'document')
                         })
                         unique_files.add(file_path)
+                        print(f"🔗 ✅ Added reference document: {item['source']}")
+                    else:
+                        print(f"🔗 ❌ No URL for document: {item['source']}")
+            
+            print(f"🔗 Total reference documents: {len(referenced_documents)}")
             
             # Start with the response content
-            final_response = response.content
-            
-            # Add reference document links if any were found
+            final_response = response.content            # Add reference document links if any were found
             if referenced_documents:
+                print(f"🔗 Adding {len(referenced_documents)} reference documents to response")
                 final_response += "\n\n📎 **Reference Documents:**"
                 for doc in referenced_documents:
                     if doc.get('url'):  # Only add link if URL exists
-                        final_response += f"\n [{doc['name']}]({doc['url']})"
+                        final_response += f"\n• [{doc['name']}]({doc['url']})"
                     else:  # If no URL, just show the document name
-                        final_response += f"\n {doc['name']} (Document available through HR)"            # Add HR contact info footer for complex queries
-            final_response += f"\n\n---\n*For additional assistance, contact HR at {self.hr_contact_email} or {self.hr_phone}*"
+                        final_response += f"\n• {doc['name']} (Document available through HR)"
+            elif relevant_content:
+                # Fallback: show document names even without URLs
+                print("🔗 No URLs generated, showing document names as fallback")
+                final_response += "\n\n📎 **Reference Documents:**"
+                unique_sources = set()
+                for item in relevant_content:
+                    source = item.get('source')
+                    if source and source not in unique_sources:
+                        final_response += f"\n• {source} (Document available through HR)"
+                        unique_sources.add(source)
+            else:
+                print("🔗 No reference documents found or generated")
+              # 🆕 STEP 10: Add assistant response to chat history
+            self.add_to_chat_history(email, 'assistant', final_response)
             
-            # 🆕 STEP 10: Add assistant response to chat history
-            self.add_to_chat_history(email, 'assistant', final_response)            
             total_time = time.time() - start_time
             print(f"⚡ Response time: {total_time:.1f}s")
             
-            return final_response
+            return self.create_response_with_actions(final_response, question, email, user_profile)
             
         except Exception as e:
             print(f"❌ Error: {e}")
             error_response = f"""I'm experiencing technical difficulties at the moment. Please try again in a moment.
 
-**For immediate assistance, please contact our HR team:**
-📧 Email: {self.hr_contact_email}
-📞 Phone: {self.hr_phone}
-🕒 Business Hours: Monday-Friday, 9:00 AM - 5:00 PM EST"""
+If the issue persists, you may want to contact your HR team for assistance."""
             
             # 🆕 Add error response to chat history
             self.add_to_chat_history(email, 'assistant', error_response)
-            return error_response
+            return self.create_response_with_actions(error_response, question, email, user_profile)
 
     def get_user_profile(self, email: str, supabase_client):
         """Get complete user profile for comprehensive personalization"""
@@ -916,9 +934,9 @@ Access URL: [{portal['url']}]({portal['url']})
 3. If you encounter any login issues, contact IT support
 
 **Need Help?**
-- For login issues: Contact IT support at it-support@fusefy.ai
+- For login issues: Contact IT support
 - For access permissions: Contact your manager or HR
-- For account setup: Contact HR at {self.hr_contact_email}
+- For account setup: Contact your HR department
 
 If you need access to additional systems, please let me know and I'll provide the appropriate portal links."""
         
@@ -940,9 +958,9 @@ If you need access to additional systems, please let me know and I'll provide th
 3. If you encounter any login issues, contact IT support
 
 **Need Help?**
-- For login issues: Contact IT support at it-support@fusefy.ai
+- For login issues: Contact IT support
 - For access permissions: Contact your manager or HR
-- For account setup: Contact HR at {self.hr_contact_email}
+- For account setup: Contact your HR department
 
 If you need access to additional systems not listed above, please let me know and I'll help you find the right portal."""
     
@@ -995,6 +1013,136 @@ If you need access to additional systems not listed above, please let me know an
 
 **Important:** These documents are mandatory for all new employees and must be acknowledged to complete your {self.company_name} onboarding process.
 
-For questions about these documents, contact HR at {self.hr_contact_email} or {self.hr_phone}"""
+For questions about these documents, contact your HR department."""
 
         return response
+
+    def generate_follow_up_actions(self, user_question: str, assistant_response: str, email: str, user_profile: Dict = None) -> List[str]:
+        """Generate short, UI-friendly follow-up actions (1-2 questions)"""
+        try:
+            print(f"🔍 Starting follow-up generation for: {email}")
+            print(f"🔍 User question: {user_question[:50]}...")
+            
+            # Get previous actions for deduplication
+            previous_actions = []
+            with self.user_suggested_actions_lock:
+                if email in self.user_suggested_actions:
+                    previous_actions = list(self.user_suggested_actions[email])[:5]  # Last 5 actions
+            
+            print(f"🔍 Previous actions count: {len(previous_actions)}")
+              # Enhanced agentic prompt for natural follow-up questions
+            prompt = f"""Based on the user's question about "{user_question[:50]}...", suggest 2 short, interactive follow-up questions that would naturally continue the HR conversation.
+
+Generate questions that are:
+- Short and conversational
+- Related to HR topics (benefits, policies, procedures, workplace info)
+- Interactive and engaging
+- Different from previous suggestions: {', '.join(previous_actions) if previous_actions else 'None'}
+
+Make them natural chat questions that would help the employee explore related HR topics.
+
+Examples:
+"What are my health benefits?"
+"How do I request time off?"
+"What's the company dress code?"
+"Can I work remotely?"
+"How do I access my payslips?"
+
+Generate exactly 2 questions, one per line:"""
+            
+            print(f"🔍 Sending LLM request...")
+              # Get LLM response
+            response = self.llm.invoke(prompt)
+            text = response.content.strip()
+            
+            print(f"🔍 LLM response: '{text}'")
+            
+            # Parse response
+            lines = [line.strip() for line in text.split('\n') if line.strip()]
+            
+            valid_actions = []
+            for line in lines[:3]:  # Take max 3 lines
+                # Clean the line
+                clean = line.strip(' "\'•-*1234567890.')                # Only check for minimum length and duplicates - no artificial constraints
+                if len(clean) >= 5:  # Minimum meaningful length
+                    # Check for duplicates
+                    if clean.lower() not in [p.lower() for p in previous_actions]:
+                        valid_actions.append(clean)
+                        print(f"🔍 ✅ Added action: '{clean}'")
+                    else:
+                        print(f"🔍 ❌ Duplicate: '{clean}'")
+                else:
+                    print(f"🔍 ❌ Too short: '{clean}' (len={len(clean)})")
+                
+                if len(valid_actions) >= 2:
+                    break
+            
+            # Track the actions
+            if valid_actions:
+                with self.user_suggested_actions_lock:
+                    if email not in self.user_suggested_actions:
+                        self.user_suggested_actions[email] = set()
+                    for action in valid_actions:
+                        self.user_suggested_actions[email].add(action.lower())
+            
+            print(f"🔍 Final actions: {valid_actions}")
+            return valid_actions
+            
+        except Exception as e:
+            print(f"❌ Follow-up generation error: {e}")
+            import traceback
+            traceback.print_exc()
+            return []  # Return empty list, no fallback
+
+    # 🆕 STEP 11: Create helper method to format response with actions
+    def create_response_with_actions(self, response_text: str, user_question: str, email: str, user_profile: Dict = None) -> Dict[str, Any]:
+        """Create formatted response dictionary with LLM-generated follow-up actions"""
+        print(f"🔍 Creating response with actions for: {email}")
+        
+        actions = self.generate_follow_up_actions(user_question, response_text, email, user_profile)
+        
+        result = {
+            "response": response_text,
+            "actions": actions
+        }
+        
+        print(f"🔍 Final result: response length={len(response_text)}, actions={actions}")
+        return result
+    
+    def clear_user_suggested_actions(self, email: str):
+        """Clear suggested actions history for a user (useful for new sessions or reset)"""
+        with self.user_suggested_actions_lock:
+            if email in self.user_suggested_actions:
+                del self.user_suggested_actions[email]
+                print(f"🧹 Cleared suggested actions history for user: {email}")
+
+    def get_user_suggested_actions_count(self, email: str) -> int:
+        """Get the count of tracked actions for a user (for monitoring/debugging)"""
+        with self.user_suggested_actions_lock:
+            return len(self.user_suggested_actions.get(email, set()))
+
+    def get_all_suggested_actions_stats(self) -> Dict[str, Any]:
+        """Get statistics about all users' suggested actions (for monitoring)"""
+        with self.user_suggested_actions_lock:
+            stats = {
+                'total_users': len(self.user_suggested_actions),
+                'total_unique_actions': sum(len(actions) for actions in self.user_suggested_actions.values()),
+                'users_with_actions': {}
+            }
+            
+            for email, actions in self.user_suggested_actions.items():
+                stats['users_with_actions'][email] = len(actions)
+            
+            return stats
+        
+    def test_follow_up_generation(self, email: str = "test@example.com"):
+        """Test method to debug follow-up action generation"""
+        print("🧪 Testing follow-up action generation...")
+        
+        test_question = "Tell me about leave policies"
+        test_response = "Here are the leave policies for Fusefy..."
+        test_profile = {"full_name": "Test User", "role": "Developer"}
+        
+        actions = self.generate_follow_up_actions(test_question, test_response, email, test_profile)
+        print(f"🧪 Generated actions: {actions}")
+        return actions
