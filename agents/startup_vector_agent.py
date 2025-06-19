@@ -7,6 +7,7 @@ import chromadb
 import hashlib
 import time
 import threading
+from datetime import datetime
 
 class StartupVectorChatAgent:
     def __init__(self):
@@ -28,6 +29,10 @@ class StartupVectorChatAgent:
         self._get_signed_url = None
         self._check_file_exists = None        # Track user sessions for personalized greetings
         self.user_sessions = {}
+        
+        # 🆕 STEP 1: Unlimited in-memory chat history storage
+        self.chat_history = {}  # {email: [{'role': 'user'/'assistant', 'content': 'message', 'timestamp': datetime}, ...]}
+        self.chat_history_lock = threading.Lock()  # Thread safety for concurrent access
         
         # URL cache for fast document reference generation
         self.url_cache = {}  # {file_path: {'url': signed_url, 'expires_at': timestamp}}
@@ -134,6 +139,69 @@ class StartupVectorChatAgent:
         }
         
         print("✅ Agent initialized - ready for preloading")
+    
+    # 🆕 STEP 2: Chat History Management Methods
+    def add_to_chat_history(self, user_email: str, role: str, content: str) -> None:
+        """Add a message to the user's chat history in memory"""
+        with self.chat_history_lock:
+            if user_email not in self.chat_history:
+                self.chat_history[user_email] = []
+            
+            self.chat_history[user_email].append({
+                'role': role,  # 'user' or 'assistant'
+                'content': content,
+                'timestamp': datetime.now()
+            })
+            
+            print(f"💬 Added {role} message to chat history for {user_email} (total: {len(self.chat_history[user_email])})")
+
+    def get_chat_history(self, user_email: str) -> List[Dict]:
+        """Retrieve the full chat history for a user"""
+        with self.chat_history_lock:
+            return self.chat_history.get(user_email, []).copy()  # Return a copy for thread safety
+
+    def get_chat_history_for_llm(self, user_email: str) -> str:
+        """Format chat history for inclusion in LLM prompt"""
+        history = self.get_chat_history(user_email)
+        
+        if not history:
+            return ""
+        
+        formatted_history = "\n\n🔄 **Previous Conversation History:**\n"
+        for message in history:
+            role_label = "Employee" if message['role'] == 'user' else "HR Assistant"
+            formatted_history += f"{role_label}: {message['content']}\n\n"
+        
+        return formatted_history
+
+    def clear_chat_history(self, user_email: str) -> bool:
+        """Clear chat history for a specific user (utility method)"""
+        with self.chat_history_lock:
+            if user_email in self.chat_history:
+                conversations_count = len(self.chat_history[user_email])
+                del self.chat_history[user_email]
+                print(f"🗑️ Cleared {conversations_count} conversations for {user_email}")
+                return True
+            return False
+
+    def get_chat_statistics(self) -> Dict[str, Any]:
+        """Get statistics about chat history storage (utility method)"""
+        with self.chat_history_lock:
+            total_users = len(self.chat_history)
+            total_messages = sum(len(history) for history in self.chat_history.values())
+            
+            user_stats = {}
+            for email, history in self.chat_history.items():
+                user_stats[email] = {
+                    'message_count': len(history),
+                    'last_message': history[-1]['timestamp'].isoformat() if history else None
+                }
+            
+            return {
+                'total_users': total_users,
+                'total_messages': total_messages,
+                'user_statistics': user_stats
+            }
     
     def set_gcs_functions(self, list_files_in_folder, get_signed_url, check_file_exists):
         """Set GCS functions for use during initialization"""
@@ -408,8 +476,7 @@ class StartupVectorChatAgent:
             relevant_content = []
             for i, doc in enumerate(results['documents'][0]):
                 metadata = results['metadatas'][0][i]
-                relevant_content.append({
-                    'content': doc,
+                relevant_content.append({                    'content': doc,
                     'source': metadata['source'],
                     'file_path': metadata.get('file_path'),
                     'doc_type': metadata.get('doc_type'),
@@ -426,10 +493,13 @@ class StartupVectorChatAgent:
             return []
     
     def process_chat_request(self, question: str, email: str, list_files_in_folder, get_signed_url, check_file_exists, supabase_client=None) -> str:
-        """Fast chat processing with personalized greeting"""
+        """Fast chat processing with unlimited in-memory chat history"""
         start_time = time.time()
         
         try:
+            # 🆕 STEP 3: Add user message to chat history immediately
+            self.add_to_chat_history(email, 'user', question)
+            
             # Check if this is the user's first message for personalized greeting
             is_first_message = email not in self.user_sessions
             user_profile = None
@@ -437,11 +507,13 @@ class StartupVectorChatAgent:
             if is_first_message and supabase_client:
                 # Get user profile for personalized greeting
                 user_profile = self.get_user_profile(email, supabase_client)
-                self.user_sessions[email] = True
-                  # If it's a simple greeting, return welcome message only
+                self.user_sessions[email] = True                # If it's a simple greeting, return welcome message only
                 greeting_words = ['hi', 'hello', 'hey', 'good morning', 'good afternoon', 'good evening']
                 if any(word in question.lower() for word in greeting_words) and len(question.split()) <= 3:
-                    return self.generate_welcome_message(user_profile)
+                    welcome_response = self.generate_welcome_message(user_profile)
+                    # 🆕 Add assistant response to chat history
+                    self.add_to_chat_history(email, 'assistant', welcome_response)
+                    return welcome_response
               # Check if this is an access-related question first (before document search)
             detected_access = self.detect_access_request(question)
             
@@ -449,36 +521,46 @@ class StartupVectorChatAgent:
                 # Get user profile for personalization if not already retrieved
                 if not user_profile and supabase_client:
                     user_profile = self.get_user_profile(email, supabase_client)
-                
-                # Generate access-specific response
-                return self.generate_access_response(question, detected_access, user_profile)
+                  # Generate access-specific response
+                access_response = self.generate_access_response(question, detected_access, user_profile)
+                # 🆕 Add assistant response to chat history
+                self.add_to_chat_history(email, 'assistant', access_response)
+                return access_response
             
             # Check if this is an attestation query (before document search)
             if self.detect_attestation_query(question):
                 # Get user profile if not already retrieved
                 if not user_profile and supabase_client:
                     user_profile = self.get_user_profile(email, supabase_client)
-                
-                # Check if initialized for document access
+                  # Check if initialized for document access
                 if not self.is_initialized:
                     with self.initialization_lock:
                         if not self.is_initialized:
                             print("⚡ Quick vector store check...")
                             self.set_gcs_functions(list_files_in_folder, get_signed_url, check_file_exists)
                             if not self.initialize_vector_store_fast(list_files_in_folder, get_signed_url, check_file_exists):
-                                return "I'm currently initializing my knowledge base. Please try again in a moment, and I'll be ready to help you with your HR questions!"
+                                init_response = "I'm currently initializing my knowledge base. Please try again in a moment, and I'll be ready to help you with your HR questions!"
+                                # 🆕 Add assistant response to chat history
+                                self.add_to_chat_history(email, 'assistant', init_response)
+                                return init_response
                             self.is_initialized = True
                 
                 # Generate attestation-specific response
-                return self.generate_attestation_response(user_profile, get_signed_url)
-              # Check if initialized, if not try quick initialization
+                attestation_response = self.generate_attestation_response(user_profile, get_signed_url)                # 🆕 Add assistant response to chat history
+                self.add_to_chat_history(email, 'assistant', attestation_response)
+                return attestation_response
+            
+            # Check if initialized, if not try quick initialization
             if not self.is_initialized:
                 with self.initialization_lock:
                     if not self.is_initialized:
                         print("⚡ Quick vector store check...")
                         self.set_gcs_functions(list_files_in_folder, get_signed_url, check_file_exists)
                         if not self.initialize_vector_store_fast(list_files_in_folder, get_signed_url, check_file_exists):
-                            return "I'm currently initializing my knowledge base. Please try again in a moment, and I'll be ready to help you with your HR questions!"
+                            init_response = "I'm currently initializing my knowledge base. Please try again in a moment, and I'll be ready to help you with your HR questions!"
+                            # 🆕 Add assistant response to chat history
+                            self.add_to_chat_history(email, 'assistant', init_response)
+                            return init_response
                         self.is_initialized = True
             
             # Regular search for other queries
@@ -500,11 +582,16 @@ I can help you with questions about:
 • Workplace guidelines and safety protocols
 
 Please feel free to rephrase your question or ask about any of these topics."""
-                
-                # Only add welcome for first-time users with no content found
+                  # Only add welcome for first-time users with no content found
                 if is_first_message and user_profile:
                     welcome = self.generate_welcome_message(user_profile)
-                    return f"{welcome}\n\n{fallback_message}"
+                    final_fallback = f"{welcome}\n\n{fallback_message}"
+                    # 🆕 Add assistant response to chat history
+                    self.add_to_chat_history(email, 'assistant', final_fallback)
+                    return final_fallback
+                
+                # 🆕 Add assistant response to chat history
+                self.add_to_chat_history(email, 'assistant', fallback_message)
                 return fallback_message
               # Create enhanced context with folder information
             context = ""
@@ -563,8 +650,7 @@ Employee Profile Context:
 - Employment Type: {user_profile.get('employment_type', 'N/A')}
 - User ID: {user_profile.get('user_id', 'N/A')}
 """
-                    
-                    # Add personalized greeting for first-time users
+                      # Add personalized greeting for first-time users
                     if is_first_message:
                         name = user_profile.get('full_name', '').split()[0] if user_profile.get('full_name') else 'there'
                         role = user_profile.get('role', '')
@@ -582,15 +668,22 @@ Employee Profile Context:
 {', '.join(mandatory_docs)}
 """
 
-            prompt = f"""You are an AI HR Assistant for {self.company_name} providing comprehensive support to employees. Based on the company information, folder context, and employee profile below, provide a detailed and thorough answer to the employee's question.
+            # 🆕 STEP 9: Get and include full chat history in the prompt
+            chat_history_context = self.get_chat_history_for_llm(email)
+
+            prompt = f"""You are an AI HR Assistant for {self.company_name} providing comprehensive support to employees. Based on the company information, folder context, employee profile, and conversation history below, provide a detailed and thorough answer to the employee's current question.
 
 IMPORTANT INSTRUCTIONS:
 - You represent {self.company_name} - always refer to the company as "{self.company_name}" when mentioning the organization
+- Consider the full conversation history to provide contextual and relevant responses
+- If the employee is asking a follow-up question, reference previous parts of the conversation appropriately
 - Provide direct, helpful responses without formal closings like "Best regards," "Sincerely," or "Thank you for your question"
 - Keep responses conversational and professional but not overly formal
 - End responses with practical information or next steps, not pleasantries
 
-Question: {question}
+Current Question: {question}
+
+{chat_history_context}
 
 {user_context}
 
@@ -664,9 +757,11 @@ Provide a complete and informative response that fully addresses the question wi
                     if doc.get('url'):  # Only add link if URL exists
                         final_response += f"\n [{doc['name']}]({doc['url']})"
                     else:  # If no URL, just show the document name
-                        final_response += f"\n {doc['name']} (Document available through HR)"              # Add HR contact info footer for complex queries
+                        final_response += f"\n {doc['name']} (Document available through HR)"            # Add HR contact info footer for complex queries
             final_response += f"\n\n---\n*For additional assistance, contact HR at {self.hr_contact_email} or {self.hr_phone}*"
             
+            # 🆕 STEP 10: Add assistant response to chat history
+            self.add_to_chat_history(email, 'assistant', final_response)            
             total_time = time.time() - start_time
             print(f"⚡ Response time: {total_time:.1f}s")
             
@@ -674,12 +769,16 @@ Provide a complete and informative response that fully addresses the question wi
             
         except Exception as e:
             print(f"❌ Error: {e}")
-            return f"""I'm experiencing technical difficulties at the moment. Please try again in a moment.
+            error_response = f"""I'm experiencing technical difficulties at the moment. Please try again in a moment.
 
 **For immediate assistance, please contact our HR team:**
 📧 Email: {self.hr_contact_email}
 📞 Phone: {self.hr_phone}
 🕒 Business Hours: Monday-Friday, 9:00 AM - 5:00 PM EST"""
+            
+            # 🆕 Add error response to chat history
+            self.add_to_chat_history(email, 'assistant', error_response)
+            return error_response
 
     def get_user_profile(self, email: str, supabase_client):
         """Get complete user profile for comprehensive personalization"""
