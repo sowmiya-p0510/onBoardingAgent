@@ -1,6 +1,7 @@
 from typing import Optional
 from pydantic import BaseModel
 import datetime
+import os
 
 # --- Models ---
 
@@ -36,7 +37,21 @@ class WelcomeAgent:
         Args:
             agent: Parameter kept for compatibility but not used
         """
-        pass
+        # Lazy initialization for LLM
+        self._llm = None
+        self.company_name = "Fusefy"
+
+    @property
+    def llm(self):
+        """Lazy initialization of LLM"""
+        if self._llm is None:
+            from langchain_openai import ChatOpenAI
+            self._llm = ChatOpenAI(
+                model="gpt-3.5-turbo",
+                temperature=0.3,
+                api_key=os.environ.get("OPENAI_API_KEY")
+            )
+        return self._llm
 
     def get_user_profile(self, email: str, supabase_client):
         """Get user profile data from Supabase."""
@@ -54,8 +69,126 @@ class WelcomeAgent:
             print(f"Error fetching user profile: {e}")
             return None
 
+    def get_user_document_acknowledgments(self, email: str, supabase_client) -> dict:
+        """Get user's document acknowledgment status from Supabase"""
+        try:
+            response = supabase_client.table("document_acknowledgments") \
+                .select("*") \
+                .eq("email", email) \
+                .order("acknowledged_at", desc=True) \
+                .execute()
+            
+            acknowledgments = {}
+            acknowledgment_details = []
+            
+            if response.data:
+                for ack in response.data:
+                    doc_name = ack['document_name']
+                    acknowledgments[doc_name] = {
+                        'acknowledged': True,
+                        'acknowledged_at': ack['acknowledged_at'],
+                        'acknowledgment_id': ack['id']
+                    }
+                    acknowledgment_details.append({
+                        'document_name': doc_name,
+                        'acknowledged_at': ack['acknowledged_at'],
+                        'acknowledgment_id': ack['id']
+                    })
+            
+            return {
+                'acknowledgments': acknowledgments,
+                'acknowledgment_details': acknowledgment_details,
+                'total_acknowledged': len(acknowledgments)
+            }
+        except Exception as e:
+            print(f"Error fetching document acknowledgments: {e}")
+            return {
+                'acknowledgments': {},
+                'acknowledgment_details': [],
+                'total_acknowledged': 0
+            }
+
+    def get_mandatory_documents_summary(self, supabase_client) -> dict:
+        """Get summary of mandatory documents (simplified version)"""
+        try:
+            # For welcome agent, we'll get a basic count
+            # In a real implementation, you might want to connect to your document system
+            # For now, we'll simulate with common mandatory documents
+            mandatory_docs = [
+                "Employee Handbook",
+                "Code of Conduct", 
+                "Safety Guidelines",
+                "IT Security Policy",
+                "Benefits Overview"            ]
+            
+            return {
+                'total_mandatory': len(mandatory_docs),
+                'mandatory_document_names': mandatory_docs
+            }
+        except Exception as e:
+            print(f"Error getting mandatory documents: {e}")
+            return {
+                'total_mandatory': 5,  # Default assumption
+                'mandatory_document_names': ["Employee Handbook", "Code of Conduct", "Safety Guidelines", "IT Security Policy", "Benefits Overview"]
+            }
+
+    def get_document_progress_summary(self, email: str, supabase_client) -> dict:
+        """Get comprehensive document progress summary"""
+        try:
+            # Get user acknowledgments
+            user_acks = self.get_user_document_acknowledgments(email, supabase_client)
+            
+            # Get mandatory documents info
+            mandatory_info = self.get_mandatory_documents_summary(supabase_client)
+            
+            total_mandatory = mandatory_info['total_mandatory']
+            total_acknowledged = user_acks['total_acknowledged']
+            completion_percentage = (total_acknowledged / total_mandatory * 100) if total_mandatory > 0 else 0
+            
+            # Categorize acknowledged vs pending
+            acknowledged_docs = []
+            pending_docs = list(mandatory_info['mandatory_document_names'])  # Start with all as pending
+            
+            # Remove acknowledged docs from pending and add to acknowledged
+            for doc_name, ack_info in user_acks['acknowledgments'].items():
+                if doc_name in pending_docs:
+                    pending_docs.remove(doc_name)
+                    # Format date properly for display
+                    ack_date = ack_info['acknowledged_at'][:10] if ack_info['acknowledged_at'] else 'Unknown'
+                    acknowledged_docs.append({
+                        'name': doc_name,
+                        'acknowledged_at': ack_date
+                    })
+                else:
+                    # Document was acknowledged but might not be in mandatory list
+                    acknowledged_docs.append({
+                        'name': doc_name,
+                        'acknowledged_at': ack_info['acknowledged_at'][:10] if ack_info['acknowledged_at'] else 'Unknown'
+                    })
+            
+            return {
+                'total_mandatory': total_mandatory,
+                'total_acknowledged': total_acknowledged,
+                'total_pending': len(pending_docs),
+                'completion_percentage': round(completion_percentage, 1),
+                'acknowledged_documents': acknowledged_docs,
+                'pending_documents': pending_docs,
+                'user_acknowledgments': user_acks
+            }
+        except Exception as e:
+            print(f"Error getting document progress: {e}")
+            return {
+                'total_mandatory': 5,
+                'total_acknowledged': 0,
+                'total_pending': 5,
+                'completion_percentage': 0.0,
+                'acknowledged_documents': [],
+                'pending_documents': ["Employee Handbook", "Code of Conduct", "Safety Guidelines", "IT Security Policy", "Benefits Overview"],
+                'user_acknowledgments': {'acknowledgments': {}, 'acknowledgment_details': [], 'total_acknowledged': 0}
+            }
+
     def process_request(self, req: WelcomeRequest, supabase_client) -> WelcomeResponse:
-        """Process a welcome message request."""
+        """Process a welcome message request with LLM generation."""
         try:
             # Get user profile data
             user_profile = self.get_user_profile(req.email, supabase_client)
@@ -66,8 +199,11 @@ class WelcomeAgent:
                     message=f"No user profile found for email: {req.email}"
                 )
 
-            # Generate static welcome message
-            welcome_message = self._generate_welcome_message(user_profile)
+            # Get document progress summary
+            doc_progress = self.get_document_progress_summary(req.email, supabase_client)
+
+            # Generate LLM-powered welcome message with progression tracking
+            welcome_message = self._generate_llm_welcome_message(user_profile, doc_progress)
 
             return WelcomeResponse(
                 success=True,
@@ -82,8 +218,29 @@ class WelcomeAgent:
                 message=f"Error processing welcome request: {str(e)}"
             )
 
-    def _generate_welcome_message(self, user_profile: UserProfile) -> str:
-        """Generate a personalized welcome message using a template."""
+    def _format_acknowledged_docs(self, acknowledged_docs: list) -> str:
+        """Format acknowledged documents list for display"""
+        if not acknowledged_docs:
+            return "• None yet"
+        
+        formatted = []
+        for doc in acknowledged_docs:
+            formatted.append(f"• {doc['name']} (completed {doc['acknowledged_at']})")
+        return "\n".join(formatted)
+    
+    def _format_pending_docs(self, pending_docs: list) -> str:
+        """Format pending documents list for display"""
+        if not pending_docs:
+            return "• All documents completed!"
+        
+        formatted = []
+        for doc in pending_docs:
+            formatted.append(f"• {doc}")
+        return "\n".join(formatted)
+
+    def _generate_llm_welcome_message(self, user_profile: UserProfile, doc_progress: dict) -> str:
+        """Generate a personalized welcome message using LLM with document progression tracking."""
+        
         # Format joining date for better readability
         try:
             joining_date = datetime.datetime.strptime(user_profile.joining_date, "%Y-%m-%d")
@@ -91,20 +248,82 @@ class WelcomeAgent:
         except:
             formatted_joining_date = user_profile.joining_date
 
-        # Extract first name for more personalized closing
+        # Extract first name for personalization
         first_name = user_profile.full_name.split()[0] if user_profile.full_name else "there"
 
-        # Template-based welcome message
-        welcome_message = f"""Dear {user_profile.full_name},
+        # Create user context for LLM
+        user_context = f"""
+Employee Profile:
+- Name: {user_profile.full_name}
+- Role: {user_profile.role}
+- Department: {user_profile.department}
+- Manager: {user_profile.manager_name} ({user_profile.manager_email})
+- Start Date: {formatted_joining_date}
+- Location: {user_profile.location}
+- Employment Type: {user_profile.employment_type}
+"""
 
-We are thrilled to welcome you to our team as a {user_profile.employment_type} {user_profile.role} in the {user_profile.department} Department. It's an exciting time for us, and we're delighted that someone with your skills and enthusiasm is joining our team. We believe that with your abilities, we will reach new heights.
+        # Create document progress context
+        progress_context = f"""
+Document Acknowledgment Progress:
+- Total Mandatory Documents: {doc_progress['total_mandatory']}
+- Documents Acknowledged: {doc_progress['total_acknowledged']}
+- Documents Pending: {doc_progress['total_pending']}
+- Completion Percentage: {doc_progress['completion_percentage']:.1f}%
+"""
 
-Starting a new job can be overwhelming, but remember, we are all here to support you. Your manager, {user_profile.manager_name}, is looking forward to working with you and is available to assist you in any way possible. Don't hesitate to reach out to him or any of your new colleagues if you have questions or need any help settling in.
+        # Add acknowledged documents details
+        if doc_progress['acknowledged_documents']:
+            progress_context += "\nCompleted Acknowledgments:\n"
+            for doc in doc_progress['acknowledged_documents']:
+                progress_context += f"- {doc['name']} (completed {doc['acknowledged_at']})\n"
 
-We are eagerly awaiting your arrival on {formatted_joining_date}, at our {user_profile.location} location. We have planned a comprehensive onboarding process for you to ensure a smooth transition into your new role. This will help you understand our work culture, the projects you'll be working on, and how you can contribute to our shared goals.
+        # Add pending documents
+        if doc_progress['pending_documents']:
+            progress_context += "\nPending Acknowledgments:\n"
+            for doc in doc_progress['pending_documents']:
+                progress_context += f"- {doc}\n"        # Format document lists for the prompt
+        acknowledged_docs_text = self._format_acknowledged_docs(doc_progress['acknowledged_documents'])
+        pending_docs_text = self._format_pending_docs(doc_progress['pending_documents'])
 
-We are confident that you will make significant contributions to our ongoing projects and future initiatives. We believe in your ability to bring fresh ideas and perspectives to our team, and we look forward to seeing your passion in action.
+        # Create LLM prompt with structured format
+        prompt = f"""Generate a professional welcome message for a new employee at {self.company_name}. Follow this EXACT structure and format:
 
-Once again, welcome aboard, {first_name}. We can't wait to start this exciting journey with you."""
+{user_context}
 
-        return welcome_message
+{progress_context}
+
+REQUIRED OUTPUT FORMAT (copy exactly, filling in the data):
+
+**Welcome to {self.company_name}, {first_name}! 🎉**
+We're thrilled to have you join us as {user_profile.role} in the {user_profile.department} department, starting {formatted_joining_date}.
+
+**📋 Document Acknowledgment Progress**
+Progress: {doc_progress['completion_percentage']:.0f}% Complete ({doc_progress['total_acknowledged']}/{doc_progress['total_mandatory']} documents)
+
+✅ **Completed:**
+{acknowledged_docs_text}
+
+⏳ **Pending:**
+{pending_docs_text}
+
+**🎯 Next Steps:**
+1. Complete any pending document acknowledgments above
+2. Reach out to your manager {user_profile.manager_name} ({user_profile.manager_email}) for your first check-in
+3. Access your employee portal to review benefits and policies
+4. Schedule your IT setup and workspace orientation
+
+**Welcome aboard! We're excited to see the great things you'll accomplish here.** 🚀
+
+---
+*If you have any questions, don't hesitate to reach out to your manager or HR team.*
+
+CRITICAL: Output ONLY the welcome message content starting with "**Welcome to {self.company_name}..." - do not include any other text, explanations, or formatting instructions in your response."""
+
+        try:
+            # Generate response using LLM
+            response = self.llm.invoke(prompt)
+            return response.content
+        except Exception as e:
+            print(f"Error generating LLM welcome message: {e}")
+            raise e
