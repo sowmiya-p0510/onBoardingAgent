@@ -109,28 +109,35 @@ class WelcomeAgent:
             }
 
     def get_mandatory_documents_summary(self, supabase_client) -> dict:
-        """Get summary of mandatory documents (simplified version)"""
+        """
+        Dynamically fetch actual mandatory documents from Supabase (agents table).
+        """
         try:
-            # For welcome agent, we'll get a basic count
-            # In a real implementation, you might want to connect to your document system
-            # For now, we'll simulate with common mandatory documents
-            mandatory_docs = [
-                "Employee Handbook",
-                "Code of Conduct", 
-                "Safety Guidelines",
-                "IT Security Policy",
-                "Benefits Overview"            ]
-            
+            response = supabase_client.table("agents").select("documents").execute()
+
+            if not response.data:
+                print("No agent documents found in Supabase.")
+                return {
+                    'total_mandatory': 0,
+                    'mandatory_document_names': []
+                }
+
+            # Flatten all document titles from all agents (or pick one specific agent if needed)
+            docs_json = response.data[0].get("documents", [])
+            doc_names = [doc["doc_title"] for doc in docs_json if "doc_title" in doc]
+
             return {
-                'total_mandatory': len(mandatory_docs),
-                'mandatory_document_names': mandatory_docs
+                'total_mandatory': len(doc_names),
+                'mandatory_document_names': doc_names
             }
+
         except Exception as e:
-            print(f"Error getting mandatory documents: {e}")
+            print(f"Error fetching documents from Supabase: {e}")
             return {
-                'total_mandatory': 5,  # Default assumption
-                'mandatory_document_names': ["Employee Handbook", "Code of Conduct", "Safety Guidelines", "IT Security Policy", "Benefits Overview"]
+                'total_mandatory': 0,
+                'mandatory_document_names': []
             }
+
 
     def get_document_progress_summary(self, email: str, supabase_client) -> dict:
         """Get comprehensive document progress summary"""

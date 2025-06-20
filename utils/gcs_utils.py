@@ -1,15 +1,18 @@
 import datetime
 import os
 from google.cloud import storage
+from typing import Optional
 
 class GCSManager:
     def __init__(self):
         """Initialize the GCS Manager."""
-        self.bucket_name = os.environ.get("GCS_BUCKET_NAME")
+        self.bucket_name: Optional[str] = os.environ.get("GCS_BUCKET_NAME")
         self.client = storage.Client()
+        if not self.bucket_name:
+            raise ValueError("GCS_BUCKET_NAME is not set in environment variables")
         self.bucket = self.client.bucket(self.bucket_name)
 
-    def get_signed_url(self, path: str, expiration=3600) -> str:
+    def get_signed_url(self, path: Optional[str], expiration=3600) -> str:
         """
         Generate a signed URL for a GCS object with authentication.
 
@@ -20,17 +23,18 @@ class GCSManager:
         Returns:
             Signed URL to the object or empty string if file doesn't exist
         """
+        if not path:
+            return ""
+
         # Remove any bucket name if it was accidentally included
-        if path.startswith(self.bucket_name):
+        if self.bucket_name and path.startswith(self.bucket_name):
             path = path.replace(f"{self.bucket_name}/", "", 1)
 
-        # Check if the blob exists first
         blob = self.bucket.blob(path)
         if not blob.exists():
             print(f"Warning: File does not exist at path: {path}")
             return ""
 
-        # Generate signed URL with expiration time
         try:
             url = blob.generate_signed_url(
                 version="v4",
@@ -42,7 +46,7 @@ class GCSManager:
             print(f"Error generating signed URL: {e}")
             return ""
 
-    def list_files_in_folder(self, folder_path: str) -> list:
+    def list_files_in_folder(self, folder_path: Optional[str]) -> list[str]:
         """
         List all files in a GCS folder.
 
@@ -52,8 +56,10 @@ class GCSManager:
         Returns:
             List of file paths that actually exist
         """
-        # Ensure folder path ends with a slash if not empty
-        if folder_path and not folder_path.endswith('/'):
+        if not folder_path:
+            return []
+
+        if not folder_path.endswith('/'):
             folder_path += '/'
 
         try:
@@ -63,7 +69,7 @@ class GCSManager:
             print(f"Error listing files in folder {folder_path}: {e}")
             return []
 
-    def check_file_exists(self, path: str) -> bool:
+    def check_file_exists(self, path: Optional[str]) -> bool:
         """
         Check if a file exists in GCS.
 
@@ -73,8 +79,10 @@ class GCSManager:
         Returns:
             True if file exists, False otherwise
         """
-        # Remove any bucket name if it was accidentally included
-        if path.startswith(self.bucket_name):
+        if not path:
+            return False
+
+        if self.bucket_name and path.startswith(self.bucket_name):
             path = path.replace(f"{self.bucket_name}/", "", 1)
 
         blob = self.bucket.blob(path)
