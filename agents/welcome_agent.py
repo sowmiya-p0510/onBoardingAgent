@@ -318,7 +318,7 @@ class WelcomeAgent:
                 "time_reference": "From Cairo to Cape Town, across all time zones"
             },
             "america": {
-                "greeting": "¡Bienvenidos! Welcome",
+                "greeting": "Howdy! Welcome",
                 "cultural_note": "Embracing the spirit of the Americas - from north to south",
                 "time_reference": "Coast to coast, sea to shining sea"
             },
@@ -332,9 +332,7 @@ class WelcomeAgent:
         return regional_greetings.get(region, regional_greetings["asia"])
 
     def _generate_llm_welcome_message(self, user_profile: UserProfile, doc_progress: dict, region: str) -> str:
-        """Generate a personalized welcome message using LLM with document progression tracking and geographic touch."""
-        
-        # Format joining date for better readability
+    # Format joining date for better readability
         try:
             joining_date = datetime.datetime.strptime(user_profile.joining_date, "%Y-%m-%d")
             formatted_joining_date = joining_date.strftime("%B %d, %Y")
@@ -349,24 +347,24 @@ class WelcomeAgent:
 
         # Create user context for LLM
         user_context = f"""
-Employee Profile:
-- Name: {user_profile.full_name}
-- Role: {user_profile.role}
-- Department: {user_profile.department}
-- Manager: {user_profile.manager_name} ({user_profile.manager_email})
-- Start Date: {formatted_joining_date}
-- Location: {user_profile.location}
-- Employment Type: {user_profile.employment_type}
-"""
+    Employee Profile:
+    - Name: {user_profile.full_name}
+    - Role: {user_profile.role}
+    - Department: {user_profile.department}
+    - Manager: {user_profile.manager_name} ({user_profile.manager_email})
+    - Start Date: {formatted_joining_date}
+    - Location: {user_profile.location}
+    - Employment Type: {user_profile.employment_type}
+    """
 
         # Create document progress context
         progress_context = f"""
-Document Acknowledgment Progress:
-- Total Mandatory Documents: {doc_progress['total_mandatory']}
-- Documents Acknowledged: {doc_progress['total_acknowledged']}
-- Documents Pending: {doc_progress['total_pending']}
-- Completion Percentage: {doc_progress['completion_percentage']:.1f}%
-"""
+    Document Acknowledgment Progress:
+    - Total Mandatory Documents: {doc_progress['total_mandatory']}
+    - Documents Acknowledged: {doc_progress['total_acknowledged']}
+    - Documents Pending: {doc_progress['total_pending']}
+    - Completion Percentage: {doc_progress['completion_percentage']:.1f}%
+    """
 
         # Add acknowledged documents details
         if doc_progress['acknowledged_documents']:
@@ -387,57 +385,73 @@ Document Acknowledgment Progress:
         # Create LLM prompt with structured format and geographic touch
         prompt = f"""Generate a professional welcome message for a new employee at {self.company_name} with a geographic touch. Follow this EXACT structure and format:
 
-{user_context}
+    {user_context}
 
-{progress_context}
+    {progress_context}
 
-GEOGRAPHIC CONTEXT:
-- User's Region: {region.upper()}
-- Regional Greeting: {regional_info['greeting']}
-- Cultural Note: {regional_info['cultural_note']}
-- Time Reference: {regional_info['time_reference']}
+    GEOGRAPHIC CONTEXT:
+    - User's Region: {region.upper()}
+    - Regional Greeting: {regional_info['greeting']}
+    - Cultural Note: {regional_info['cultural_note']}
+    - Time Reference: {regional_info['time_reference']}
 
-INSTRUCTIONS FOR GEOGRAPHIC TOUCH:
-1. Use the regional greeting in the welcome line
-2. Include 1-2 culturally appropriate references that acknowledge their geographic region
-3. Add a time-zone friendly note about global collaboration
-4. Keep the geographic elements natural and professional - don't overdo it
-5. Maintain the core business message while adding warmth through regional awareness
+    INSTRUCTIONS FOR GEOGRAPHIC TOUCH:
+    1. Include 1-2 culturally appropriate references that acknowledge their geographic region
+    2. Add a time-zone friendly note about global collaboration
+    3. Keep the geographic elements natural and professional - don't overdo it
+    4. Maintain the core business message while adding warmth through regional awareness
 
-REQUIRED OUTPUT FORMAT (copy exactly, filling in the data with geographic elements):
+    REQUIRED OUTPUT FORMAT (copy exactly, filling in the data with geographic elements):
 
-**{regional_info['greeting']} to {self.company_name}, {first_name}! 🎉🌍**
-{regional_info['cultural_note']} - we're thrilled to have you join us as {user_profile.role} in the {user_profile.department} department, starting {formatted_joining_date}. {regional_info['time_reference']}, you're now part of our global {self.company_name} family!
+    **{regional_info['greeting']} to {self.company_name}, {first_name}! 🎉🌍**
+    {regional_info['cultural_note']} - we're thrilled to have you join us as {user_profile.role} in the {user_profile.department} department, starting {formatted_joining_date}. {regional_info['time_reference']}, you're now part of our global {self.company_name} family!
 
-**📋 Document Acknowledgment Progress**
-Progress: {doc_progress['completion_percentage']:.0f}% Complete ({doc_progress['total_acknowledged']}/{doc_progress['total_mandatory']} documents)
+    **📋 Document Acknowledgment Progress**
+    Progress: {doc_progress['completion_percentage']:.0f}% Complete ({doc_progress['total_acknowledged']}/{doc_progress['total_mandatory']} documents)
 
-✅ **Completed:**
-{acknowledged_docs_text}
+    ✅ **Completed:**
+    {acknowledged_docs_text}
 
-⏳ **Pending:**
-{pending_docs_text}
+    ⏳ **Pending:**
+    {pending_docs_text}
 
-**🎯 Next Steps:**
-1. Complete any pending document acknowledgments above
-2. Reach out to your manager {user_profile.manager_name} ({user_profile.manager_email}) for your first check-in
-3. Access your employee portal to review benefits and policies
-4. Schedule your IT setup and workspace orientation
+    **🎯 Next Steps:**
+    1. Complete any pending document acknowledgments above
+    2. Reach out to your manager {user_profile.manager_name} ({user_profile.manager_email}) for your first check-in
+    3. Access your employee portal to review benefits and policies
+    4. Schedule your IT setup and workspace orientation
 
-**🌐 Global Collaboration Note:**
-Our team spans across continents, so don't worry about time zones - we've got flexible communication channels to keep everyone connected, whether you're starting your day or winding down!
+    **🌐 Global Collaboration Note:**
+    Our team spans across continents, so don't worry about time zones - we've got flexible communication channels to keep everyone connected, whether you're starting your day or winding down!
 
-**Welcome aboard! We're excited to see the great things you'll accomplish here.** 🚀
+    **Welcome aboard! We're excited to see the great things you'll accomplish here.** 🚀
 
----
-*If you have any questions, don't hesitate to reach out to your manager or HR team. We're here to support you 24/7 across all regions!*
+    ---
+    *If you have any questions, don't hesitate to reach out to your manager or HR team. We're here to support you 24/7 across all regions!*
 
-CRITICAL: Output ONLY the welcome message content starting with the regional greeting - do not include any other text, explanations, or formatting instructions in your response. Make the geographic elements feel natural and integrated, not forced."""
+    CRITICAL: Output ONLY the welcome message content starting with the regional greeting - do not include any other text, explanations, or formatting instructions in your response. Make the geographic elements feel natural and integrated, not forced."""
+
+        required_sections = [
+            "📋 Document Acknowledgment Progress",
+            "✅ **Completed:**",
+            "⏳ **Pending:**",
+            "🎯 Next Steps:",
+            "🌐 Global Collaboration Note:",
+            "Welcome aboard! We're excited to see the great things you'll accomplish here."
+        ]
 
         try:
-            # Generate response using LLM
-            response = self.llm.invoke(prompt)
-            return response.content
+            # Try up to 3 times to get a valid, full response
+            for _ in range(3):
+                response = self.llm.invoke(prompt)
+                content = response.content
+                if all(section in content for section in required_sections):
+                    return content
+            # If still not valid, return a fallback message
+            return (
+                f"**{regional_info['greeting']} to {self.company_name}, {first_name}! 🎉🌍**\n"
+                "Sorry, there was an error generating your full welcome message. Please refresh or contact support."
+            )
         except Exception as e:
             print(f"Error generating LLM welcome message: {e}")
             raise e
