@@ -2,6 +2,8 @@ from typing import Optional
 from pydantic import BaseModel
 import datetime
 import os
+import requests
+import socket
 
 # --- Models ---
 
@@ -52,6 +54,61 @@ class WelcomeAgent:
                 api_key=os.environ.get("OPENAI_API_KEY")
             )
         return self._llm
+
+    def get_user_ip_and_region(self) -> tuple[str, str]:
+        """
+        Get user's IP address and determine their geographic region.
+        Returns tuple of (ip_address, region)
+        """
+        try:
+            # Get public IP address
+            ip_response = requests.get('https://api.ipify.org', timeout=5)
+            ip_address = ip_response.text.strip()
+            
+            # Get geographic information from IP
+            geo_response = requests.get(f'http://ip-api.com/json/{ip_address}', timeout=5)
+            geo_data = geo_response.json()
+            
+            if geo_data.get('status') == 'success':
+                continent = geo_data.get('continent', '').lower()
+                country = geo_data.get('country', '').lower()
+                
+                # Map to our four regions
+                region = self._map_to_region(continent, country)
+                return ip_address, region
+            else:
+                return ip_address, "asia"  # Default fallback
+                
+        except Exception as e:
+            print(f"Error getting IP/region info: {e}")
+            return "unknown", "asia"  # Default fallback
+
+    def _map_to_region(self, continent: str, country: str) -> str:
+        """
+        Map continent/country to one of our four regions: asia, africa, america, australia
+        """
+        continent = continent.lower()
+        country = country.lower()
+        
+        # Mapping logic
+        if continent in ['asia']:
+            return "asia"
+        elif continent in ['africa']:
+            return "africa"
+        elif continent in ['north america', 'south america'] or 'america' in continent:
+            return "america"
+        elif continent in ['oceania'] or country in ['australia', 'new zealand']:
+            return "australia"
+        else:
+            # Default fallback based on common patterns
+            if any(keyword in country for keyword in ['australia', 'new zealand']):
+                return "australia"
+            elif any(keyword in country for keyword in ['canada', 'usa', 'united states', 'mexico', 'brazil', 'argentina']):
+                return "america"
+            elif any(keyword in country for keyword in ['egypt', 'south africa', 'nigeria', 'kenya']):
+                return "africa"
+            else:
+                return "asia"  # Default fallback
 
     def get_user_profile(self, email: str, supabase_client):
         """Get user profile data from Supabase."""
@@ -138,7 +195,6 @@ class WelcomeAgent:
                 'mandatory_document_names': []
             }
 
-
     def get_document_progress_summary(self, email: str, supabase_client) -> dict:
         """Get comprehensive document progress summary"""
         try:
@@ -209,8 +265,11 @@ class WelcomeAgent:
             # Get document progress summary
             doc_progress = self.get_document_progress_summary(req.email, supabase_client)
 
-            # Generate LLM-powered welcome message with progression tracking
-            welcome_message = self._generate_llm_welcome_message(user_profile, doc_progress)
+            # Get geographic information
+            ip_address, region = self.get_user_ip_and_region()
+
+            # Generate LLM-powered welcome message with progression tracking and geographic touch
+            welcome_message = self._generate_llm_welcome_message(user_profile, doc_progress, region)
 
             return WelcomeResponse(
                 success=True,
@@ -245,8 +304,35 @@ class WelcomeAgent:
             formatted.append(f"• {doc}")
         return "\n".join(formatted)
 
-    def _generate_llm_welcome_message(self, user_profile: UserProfile, doc_progress: dict) -> str:
-        """Generate a personalized welcome message using LLM with document progression tracking."""
+    def _get_regional_greeting(self, region: str) -> str:
+        """Get region-specific greeting and cultural elements"""
+        regional_greetings = {
+            "asia": {
+                "greeting": "Namaste and welcome",
+                "cultural_note": "We're honored to have you join our diverse Asian community",
+                "time_reference": "Whether it's morning in Tokyo or evening in Mumbai"
+            },
+            "africa": {
+                "greeting": "Sawubona and welcome", 
+                "cultural_note": "We celebrate the rich diversity of the African continent",
+                "time_reference": "From Cairo to Cape Town, across all time zones"
+            },
+            "america": {
+                "greeting": "¡Bienvenidos! Welcome",
+                "cultural_note": "Embracing the spirit of the Americas - from north to south",
+                "time_reference": "Coast to coast, sea to shining sea"
+            },
+            "australia": {
+                "greeting": "G'day and welcome",
+                "cultural_note": "Bringing the Aussie spirit of mateship to our global team",
+                "time_reference": "From the Outback to the Harbor Bridge"
+            }
+        }
+        
+        return regional_greetings.get(region, regional_greetings["asia"])
+
+    def _generate_llm_welcome_message(self, user_profile: UserProfile, doc_progress: dict, region: str) -> str:
+        """Generate a personalized welcome message using LLM with document progression tracking and geographic touch."""
         
         # Format joining date for better readability
         try:
@@ -257,6 +343,9 @@ class WelcomeAgent:
 
         # Extract first name for personalization
         first_name = user_profile.full_name.split()[0] if user_profile.full_name else "there"
+
+        # Get regional elements
+        regional_info = self._get_regional_greeting(region)
 
         # Create user context for LLM
         user_context = f"""
@@ -289,21 +378,36 @@ Document Acknowledgment Progress:
         if doc_progress['pending_documents']:
             progress_context += "\nPending Acknowledgments:\n"
             for doc in doc_progress['pending_documents']:
-                progress_context += f"- {doc}\n"        # Format document lists for the prompt
+                progress_context += f"- {doc}\n"
+
+        # Format document lists for the prompt
         acknowledged_docs_text = self._format_acknowledged_docs(doc_progress['acknowledged_documents'])
         pending_docs_text = self._format_pending_docs(doc_progress['pending_documents'])
 
-        # Create LLM prompt with structured format
-        prompt = f"""Generate a professional welcome message for a new employee at {self.company_name}. Follow this EXACT structure and format:
+        # Create LLM prompt with structured format and geographic touch
+        prompt = f"""Generate a professional welcome message for a new employee at {self.company_name} with a geographic touch. Follow this EXACT structure and format:
 
 {user_context}
 
 {progress_context}
 
-REQUIRED OUTPUT FORMAT (copy exactly, filling in the data):
+GEOGRAPHIC CONTEXT:
+- User's Region: {region.upper()}
+- Regional Greeting: {regional_info['greeting']}
+- Cultural Note: {regional_info['cultural_note']}
+- Time Reference: {regional_info['time_reference']}
 
-**Welcome to {self.company_name}, {first_name}! 🎉**
-We're thrilled to have you join us as {user_profile.role} in the {user_profile.department} department, starting {formatted_joining_date}.
+INSTRUCTIONS FOR GEOGRAPHIC TOUCH:
+1. Use the regional greeting in the welcome line
+2. Include 1-2 culturally appropriate references that acknowledge their geographic region
+3. Add a time-zone friendly note about global collaboration
+4. Keep the geographic elements natural and professional - don't overdo it
+5. Maintain the core business message while adding warmth through regional awareness
+
+REQUIRED OUTPUT FORMAT (copy exactly, filling in the data with geographic elements):
+
+**{regional_info['greeting']} to {self.company_name}, {first_name}! 🎉🌍**
+{regional_info['cultural_note']} - we're thrilled to have you join us as {user_profile.role} in the {user_profile.department} department, starting {formatted_joining_date}. {regional_info['time_reference']}, you're now part of our global {self.company_name} family!
 
 **📋 Document Acknowledgment Progress**
 Progress: {doc_progress['completion_percentage']:.0f}% Complete ({doc_progress['total_acknowledged']}/{doc_progress['total_mandatory']} documents)
@@ -320,12 +424,15 @@ Progress: {doc_progress['completion_percentage']:.0f}% Complete ({doc_progress['
 3. Access your employee portal to review benefits and policies
 4. Schedule your IT setup and workspace orientation
 
+**🌐 Global Collaboration Note:**
+Our team spans across continents, so don't worry about time zones - we've got flexible communication channels to keep everyone connected, whether you're starting your day or winding down!
+
 **Welcome aboard! We're excited to see the great things you'll accomplish here.** 🚀
 
 ---
-*If you have any questions, don't hesitate to reach out to your manager or HR team.*
+*If you have any questions, don't hesitate to reach out to your manager or HR team. We're here to support you 24/7 across all regions!*
 
-CRITICAL: Output ONLY the welcome message content starting with "**Welcome to {self.company_name}..." - do not include any other text, explanations, or formatting instructions in your response."""
+CRITICAL: Output ONLY the welcome message content starting with the regional greeting - do not include any other text, explanations, or formatting instructions in your response. Make the geographic elements feel natural and integrated, not forced."""
 
         try:
             # Generate response using LLM
