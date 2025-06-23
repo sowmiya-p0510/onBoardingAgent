@@ -13,39 +13,44 @@ import re
 class StartupVectorChatAgent:
     def __init__(self):
         print("🚀 Initializing Startup Vector Chat Agent...")
-        
+
         # Lazy initialization for heavy libraries
         self._llm = None
         self._agent = None
-        
+
         # ChromaDB setup
         self.chroma_client = chromadb.PersistentClient(path="./chroma_db")
         self.collection_name = "hr_documents_startup"
         self.collection = None
         self.is_initialized = False
         self.initialization_lock = threading.Lock()
-        
+
         # Store functions for later use
         self._list_files_in_folder = None
         self._get_signed_url = None
-        self._check_file_exists = None        # Track user sessions for personalized greetings
+        self._check_file_exists = None        
+
+        # Track user sessions for personalized greetings
         self.user_sessions = {}
-          # 🆕 STEP 1: Unlimited in-memory chat history storage
+
+        # 🆕 STEP 1: Unlimited in-memory chat history storage
         self.chat_history = {}  # {email: [{'role': 'user'/'assistant', 'content': 'message', 'timestamp': datetime}, ...]}
         self.chat_history_lock = threading.Lock()  # Thread safety for concurrent access
-          # 🆕 NEW: Track suggested follow-up actions per user to prevent repetition
+
+        # 🆕 NEW: Track suggested follow-up actions per user to prevent repetition
         self.user_suggested_actions = {}  # {email: set(action_text, ...)} - tracks all suggested actions per user
         self.user_suggested_actions_lock = threading.Lock()  # Thread safety for concurrent access
-        
+
         # Configuration for follow-up actions (no length constraints for natural conversation)
         self.max_tracked_actions = 50  # Maximum actions to track per user (to prevent memory bloat)
-          # URL cache for fast document reference generation
+
+        # URL cache for fast document reference generation
         self.url_cache = {}  # {file_path: {'url': signed_url, 'expires_at': timestamp}}
         self.url_cache_duration = 3000  # 50 minutes (safe buffer from 1 hour expiration)
-        
+
         # Company name for consistent branding
         self.company_name = "Fusefy"
-        
+
         # Access portal URLs mapping for system access requests
         self.access_portals = {
             "slack": {
@@ -109,7 +114,8 @@ class StartupVectorChatAgent:
                 "keywords": ["database", "db", "sql", "mysql", "postgresql", "data access"]
             }
         }
-          # Folder definitions for better LLM understanding
+
+        # Folder definitions for better LLM understanding
         self.folder_definitions = {
             "onboarding agent/benefits/": {
                 "name": "Employee Benefits",
@@ -136,23 +142,24 @@ class StartupVectorChatAgent:
                 "description": "Official company policies covering workplace conduct, compliance requirements, security protocols, and organizational guidelines that all employees must follow.",
                 "content_type": "Corporate policies and compliance documentation",
                 "use_cases": ["code of conduct", "security policies", "workplace guidelines", "compliance requirements", "disciplinary procedures"]
-            }        }
-        
+            }        
+        }
+
         print("✅ Agent initialized - ready for preloading")
-    
+
     # 🆕 STEP 2: Chat History Management Methods
     def add_to_chat_history(self, user_email: str, role: str, content: str) -> None:
         """Add a message to the user's chat history in memory"""
         with self.chat_history_lock:
             if user_email not in self.chat_history:
                 self.chat_history[user_email] = []
-            
+
             self.chat_history[user_email].append({
                 'role': role,  # 'user' or 'assistant'
                 'content': content,
                 'timestamp': datetime.now()
             })
-            
+
             print(f"💬 Added {role} message to chat history for {user_email} (total: {len(self.chat_history[user_email])})")
 
     def get_chat_history(self, user_email: str) -> List[Dict]:
@@ -163,15 +170,15 @@ class StartupVectorChatAgent:
     def get_chat_history_for_llm(self, user_email: str) -> str:
         """Format chat history for inclusion in LLM prompt"""
         history = self.get_chat_history(user_email)
-        
+
         if not history:
             return ""
-        
+
         formatted_history = "\n\n🔄 **Previous Conversation History:**\n"
         for message in history:
             role_label = "Employee" if message['role'] == 'user' else "HR Assistant"
             formatted_history += f"{role_label}: {message['content']}\n\n"
-        
+
         return formatted_history
 
     def clear_chat_history(self, user_email: str) -> bool:
@@ -189,26 +196,26 @@ class StartupVectorChatAgent:
         with self.chat_history_lock:
             total_users = len(self.chat_history)
             total_messages = sum(len(history) for history in self.chat_history.values())
-            
+
             user_stats = {}
             for email, history in self.chat_history.items():
                 user_stats[email] = {
                     'message_count': len(history),
                     'last_message': history[-1]['timestamp'].isoformat() if history else None
                 }
-            
+
             return {
                 'total_users': total_users,
                 'total_messages': total_messages,
                 'user_statistics': user_stats
             }
-    
+
     def set_gcs_functions(self, list_files_in_folder, get_signed_url, check_file_exists):
         """Set GCS functions for use during initialization"""
         self._list_files_in_folder = list_files_in_folder
         self._get_signed_url = get_signed_url
         self._check_file_exists = check_file_exists
-    
+
     def preload_vector_store_background(self):
         """Preload vector store in background thread"""
         def preload():
@@ -216,7 +223,7 @@ class StartupVectorChatAgent:
                 if self._list_files_in_folder is None:
                     print("⚠️ GCS functions not set, skipping preload")
                     return
-                
+
                 print("🔄 Background: Starting vector store preload...")
                 with self.initialization_lock:
                     success = self.initialize_vector_store_fast(
@@ -231,12 +238,12 @@ class StartupVectorChatAgent:
                         print("❌ Background: Vector store preload failed")
             except Exception as e:
                 print(f"❌ Background preload error: {e}")
-        
+
         # Start background thread
         thread = threading.Thread(target=preload, daemon=True)
         thread.start()
         return thread
-    
+
     @property
     def llm(self):
         if self._llm is None:
@@ -247,7 +254,7 @@ class StartupVectorChatAgent:
                 api_key=os.environ.get("OPENAI_API_KEY")
             )
         return self._llm
-    
+
     @property
     def agent(self):
         if self._agent is None:
@@ -257,23 +264,24 @@ class StartupVectorChatAgent:
                 goal="Provide quick, accurate answers about Fusefy policies and procedures",
                 backstory=f"You are a helpful HR assistant for {self.company_name}, providing support to employees with company policies, benefits, and procedures.",
                 verbose=False,
-                allow_delegation=False,                llm=self.llm
+                allow_delegation=False,                
+                llm=self.llm
             )
         return self._agent
-    
+
     def get_cached_signed_url(self, file_path: str, get_signed_url) -> str:
         """Lightning-fast URL generation with intelligent caching"""
         current_time = time.time()
-        
+
         print(f"🔗 URL request for: {file_path}")
-        
+
         # Check cache first (microsecond lookup)
         if file_path in self.url_cache:
             cache_entry = self.url_cache[file_path]
             if current_time < cache_entry['expires_at']:
                 print(f"🔗 Cache hit for: {file_path}")
                 return cache_entry['url']  # Instant return from cache
-        
+
         # Generate new URL only if needed
         try:
             print(f"🔗 Generating new URL for: {file_path}")
@@ -289,19 +297,19 @@ class StartupVectorChatAgent:
                 print(f"🔗 get_signed_url returned empty/None for: {file_path}")
         except Exception as e:
             print(f"🔗 URL generation error for {file_path}: {e}")
-        
+
         print(f"🔗 Failed to generate URL for: {file_path}")
         return ""
-    
+
     def extract_text_from_pdf_fast(self, pdf_url: str) -> str:
         """Fast PDF extraction with limits"""
         try:
             response = requests.get(pdf_url, timeout=15)
             response.raise_for_status()
-            
+
             pdf_file = BytesIO(response.content)
             pdf_reader = PyPDF2.PdfReader(pdf_file)
-            
+
             text = ""
             # Only first 3 pages for speed
             max_pages = min(3, len(pdf_reader.pages))
@@ -311,25 +319,25 @@ class StartupVectorChatAgent:
                 # Stop if we have enough content
                 if len(text) > 2500:
                     break
-            
+
             return text.strip()
         except Exception as e:
             print(f"❌ Error extracting PDF: {e}")
             return ""
-    
+
     def chunk_text_simple(self, text: str, chunk_size: int = 600) -> List[str]:
         """Simple, fast text chunking"""
         if len(text) <= chunk_size:
             return [text]
-        
+
         chunks = []
         for i in range(0, len(text), chunk_size):
             chunk = text[i:i + chunk_size]
             if len(chunk.strip()) > 50:  # Only add meaningful chunks
                 chunks.append(chunk)
-        
+
         return chunks
-    
+
     def get_documents_hash(self, list_files_in_folder) -> str:
         """Generate hash to check if documents have changed"""
         all_files = []
@@ -340,16 +348,16 @@ class StartupVectorChatAgent:
                 all_files.extend([f for f in files if f.endswith('.pdf')])
             except:
                 pass
-        
+
         hash_input = "|".join(sorted(all_files))
         return hashlib.md5(hash_input.encode()).hexdigest()
-    
+
     def initialize_vector_store_fast(self, list_files_in_folder, get_signed_url, check_file_exists) -> bool:
         """Fast vector store initialization"""
         try:
             current_hash = self.get_documents_hash(list_files_in_folder)
             print("🔄 Checking existing vector store...")
-            
+
             # Try to get existing collection
             try:
                 self.collection = self.chroma_client.get_collection(self.collection_name)
@@ -361,41 +369,43 @@ class StartupVectorChatAgent:
                         count = self.collection.count()
                         print(f"✅ Using existing vector store ({count} chunks)")
                         return True
-                
+
                 # Hash doesn't match, delete old collection
                 self.chroma_client.delete_collection(self.collection_name)
                 print("🔄 Documents changed, rebuilding...")
-                
+
             except:
                 print("📝 Creating new vector store...")
-            
+
             # Create new collection
             self.collection = self.chroma_client.create_collection(
                 name=self.collection_name,
                 metadata={"hnsw:space": "cosine"}
             )
-            
+
             # Load documents quickly
             documents = self.load_documents_parallel(list_files_in_folder, get_signed_url, check_file_exists)
-            
+
             if not documents:
                 print("❌ No documents found")
                 return False
-              # Process into chunks
+
+            # Process into chunks
             all_chunks = []
             all_metadatas = []
             all_ids = []
-            
+
             chunk_id = 0
             for doc_name, (content, file_path, folder_info) in documents.items():  # Unpack content, file path, and folder info
                 chunks = self.chunk_text_simple(content)
-                
+
                 for i, chunk in enumerate(chunks):
                     all_chunks.append(chunk)
-                      # Improved document type classification based on folder path
+
+                    # Improved document type classification based on folder path
                     doc_type = "document"  # default
                     is_mandatory = False
-                    
+
                     if "onboarding agent/policy/" in file_path.lower():
                         doc_type = "policy"
                     elif "onboarding agent/benefit" in file_path.lower():
@@ -405,7 +415,7 @@ class StartupVectorChatAgent:
                     elif "onboarding agent/onboarding/" in file_path.lower():
                         doc_type = "onboarding"
                         is_mandatory = True  # Mark onboarding documents as mandatory
-                    
+
                     all_metadatas.append({
                         "source": doc_name,
                         "file_path": file_path,  # Store the original GCS file path
@@ -419,7 +429,7 @@ class StartupVectorChatAgent:
                     })
                     all_ids.append(f"{doc_name}_chunk_{i}")
                     chunk_id += 1
-            
+
             # Add all chunks at once
             if all_chunks:
                 self.collection.add(
@@ -427,27 +437,27 @@ class StartupVectorChatAgent:
                     metadatas=all_metadatas,
                     ids=all_ids
                 )
-                
+
                 print(f"✅ Vector store created: {len(all_chunks)} chunks from {len(documents)} docs")
                 return True
-            
+
             return False
-            
+
         except Exception as e:
             print(f"❌ Vector store initialization error: {e}")
             return False
-    
+
     def load_documents_parallel(self, list_files_in_folder, get_signed_url, check_file_exists) -> Dict[str, tuple]:
         """Load documents and store content with file paths and folder context"""
         documents = {}
-        
+
         # Updated folder structure with parent "onboarding agent/" folder
         for folder in ["onboarding agent/benefits/", "onboarding agent/expense/", "onboarding agent/onboarding/", "onboarding agent/policy/"]:
             try:
                 files = list_files_in_folder(folder)
                 folder_info = self.folder_definitions.get(folder, {})
                 print(f"📁 Processing {len(files)} files from {folder_info.get('name', folder)}")
-                
+
                 for file_path in files:
                     if file_path.endswith('.pdf') and check_file_exists(file_path):
                         signed_url = get_signed_url(file_path)
@@ -458,32 +468,32 @@ class StartupVectorChatAgent:
                                 # Store content, file path, and folder context
                                 documents[file_name] = (content, file_path, folder_info)
                                 print(f"✅ Loaded: {file_name} ({folder_info.get('name', 'Unknown')})")
-                        
+
                         # Small delay to be gentle on GCS
                         time.sleep(0.1)
-                        
+
             except Exception as e:
                 print(f"❌ Error loading from {folder}: {e}")
-        
+
         return documents
-    
+
     def search_relevant_content_fast(self, question: str) -> List[Dict]:
         """Fast search with minimal results and folder context"""
         if not self.collection:
             return []
-        
+
         try:
             results = self.collection.query(
                 query_texts=[question],
                 n_results=3,  # Increased from 2 to 3 for better coverage
                 include=['documents', 'metadatas']            )
-            
+
             relevant_content = []
             for i, doc in enumerate(results['documents'][0]):
                 metadata = results['metadatas'][0][i]
-                
+
                 print(f"🔍 Search result {i}: {metadata.get('source')} - file_path: {metadata.get('file_path')}")
-                
+
                 relevant_content.append({
                     'content': doc,
                     'source': metadata['source'],
@@ -494,22 +504,41 @@ class StartupVectorChatAgent:
                     'content_type': metadata.get('content_type'),
                     'is_mandatory': metadata.get('is_mandatory', False)
                 })
-            
+
             print(f"🔍 Total relevant content items: {len(relevant_content)}")
             return relevant_content
-            
+
         except Exception as e:
             print(f"❌ Search error: {e}")
             return []
-    
+
     def normalize_region(self, region_raw: str) -> str:
+        """
+        Normalize any detected region/city/country to a canonical region string for LLM use.
+        Only returns: 'asia', 'africa', 'america', 'australia'. Defaults to 'asia'.
+        """
         region_raw = (region_raw or "").strip().lower()
         canonical_regions = {"asia", "africa", "america", "australia"}
+        # Direct match
         if region_raw in canonical_regions:
             return region_raw
-        # Let the LLM handle mapping, but default to 'asia' if not canonical
+        # Map common countries/cities to regions
+        region_map = {
+            # Asia
+            "india": "asia", "chennai": "asia", "singapore": "asia", "japan": "asia", "china": "asia", "malaysia": "asia", "bangalore": "asia", "delhi": "asia", "mumbai": "asia", "asia": "asia",
+            # Africa
+            "nigeria": "africa", "south africa": "africa", "kenya": "africa", "africa": "africa",
+            # America
+            "usa": "america", "united states": "america", "canada": "america", "america": "america", "brazil": "america", "mexico": "america",
+            # Australia
+            "australia": "australia", "sydney": "australia", "melbourne": "australia"
+        }
+        for key, val in region_map.items():
+            if key in region_raw:
+                return val
+        # Fallback
         return "asia"
-    
+
     def get_user_profile(self, email: str, supabase_client, ip_address: str):
         """Get complete user profile for comprehensive personalization"""
         try:
@@ -528,7 +557,7 @@ class StartupVectorChatAgent:
             print(f"Error fetching user profile: {e}")
             detected_region = self.detect_region_from_ip(ip_address)
             return {'region': self.normalize_region(detected_region)}
-    
+
     def process_chat_request(self, question: str, email: str, list_files_in_folder, get_signed_url, check_file_exists, supabase_client=None, ip_address: str = None) -> Dict[str, Any]:
         """Fast chat processing with unlimited in-memory chat history and region detection"""
         start_time = time.time()
@@ -623,7 +652,7 @@ class StartupVectorChatAgent:
                         folder_path = 'onboarding agent/onboarding/'
                     elif 'onboarding agent/policy/' in item.get('file_path', ''):
                         folder_path = 'onboarding agent/policy/'
-                    
+
                     if folder_path and folder_path not in unique_folders:
                         unique_folders.add(folder_path)
                         folder_def = self.folder_definitions.get(folder_path, {})
@@ -631,11 +660,11 @@ class StartupVectorChatAgent:
             user_context = ""
             personalized_greeting = ""
             acknowledgment_context = ""
-            
+
             if supabase_client:
                 if not user_profile:
                     user_profile = self.get_user_profile(email, supabase_client, ip_address)
-                
+
                 if user_profile:
                     # Create comprehensive user context from all profile fields
                     user_context = f"""
@@ -650,12 +679,12 @@ Employee Profile Context:
 - Employment Type: {user_profile.get('employment_type', 'N/A')}
 - User ID: {user_profile.get('user_id', 'N/A')}
 """
-                      # Add personalized greeting for first-time users
+                    # Add personalized greeting for first-time users
                     if is_first_message:
                         name = user_profile.get('full_name', '').split()[0] if user_profile.get('full_name') else 'there'
                         role = user_profile.get('role', '')
                         dept = user_profile.get('department', '')
-                        
+
                         if role and dept:
                             personalized_greeting = f"Start your response with: 'Hello {name}! As a {role} in {dept}, here's what you need to know:'"
                         else:
@@ -678,18 +707,10 @@ Employee Profile Context:
 
 IMPORTANT INSTRUCTIONS:
 - ONLY provide the answer for the user's region: {region.upper()} (must be one of: ASIA, AFRICA, AMERICA, AUSTRALIA).
-- If the detected region is not one of these, map it to the closest (e.g., "Chennai" → "ASIA") and answer for that region.
+- If the detected region is not one of these, always map it to the closest canonical region (e.g., 'Chennai', 'India', 'Singapore' → 'ASIA') and answer for that region.
+- DO NOT use city or country names in your answer; always refer to the region only (e.g., 'Asia', not 'Chennai' or 'India').
 - Do NOT include global or other region details in the main answer.
 - If no content is found for the region, say so and offer to show another region.
-- After your main answer, generate exactly two follow-up questions that are:
-    - Written from the user's perspective (as if the user is asking).
-    - Directly relevant to the user's original question and your answer.
-    - Practical, actionable, and specific to the user's scenario.
-    - Do NOT repeat generic or region-based follow-ups unless the user's question is about regions.
-    - Example: If the user asked about HSA deposits, follow-ups could be:
-        - "How do I update my direct deposit details in Workday?"
-        - "What should I do if my HSA contributions still don't process after updating my details?"
-    - List these follow-up questions at the end of your response, each on a new line.
 - You represent {self.company_name} - always refer to the company as "{self.company_name}" when mentioning the organization.
 - Consider the full conversation history to provide contextual and relevant responses.
 - Provide direct, helpful responses without formal closings like "Best regards," "Sincerely," or "Thank you for your question".
@@ -739,17 +760,31 @@ Instructions:
 - DO NOT end with formal closings like "Best regards," "Sincerely," "Thank you," or similar phrases
 - End with practical next steps or relevant information instead of pleasantries
 
-Provide a complete and informative response that fully addresses the question with personalized context and proper folder categorization. At the end of your response, clearly list exactly two user-perspective follow-up questions that are directly relevant to the user's scenario."""
-            response = self.llm.invoke(prompt)            # Generate URLs for referenced documents (with support for pre-generated URLs)
+Provide a complete and informative response that fully addresses the question with personalized context and proper folder categorization.
+
+FOLLOW-UP SUGGESTIONS INSTRUCTIONS:
+- After your comprehensive answer, generate exactly two topic suggestions for what the user might want to explore next
+- Format each suggestion as a direct topic statement, not a question (e.g., "Explain the code of conduct policy" instead of "Would you like to know about the code of conduct?")
+- Make suggestions specific and directly related to the information you just provided
+- If discussing region-specific information, ONE suggestion can be about another region's policies
+- The other suggestion should explore a different but related aspect of the current topic
+- Suggestions should be concise (5-8 words) and actionable
+- Do NOT use "Would you like to..." or similar question phrasing
+- Each suggestion should be a direct topic statement the user could ask about next
+"""
+
+            response = self.llm.invoke(prompt)
+
+            # Generate URLs for referenced documents (with support for pre-generated URLs)
             referenced_documents = []
             unique_files = set()
-            
+
             print(f"🔗 Processing {len(relevant_content)} items for reference documents...")
-            
+
             for item in relevant_content:
                 file_path = item.get('file_path')
                 print(f"🔗 Processing item: {item.get('source')} with file_path: {file_path}")
-                
+
                 if file_path and file_path not in unique_files:
                     # Check if URL is already generated (for attestation queries)
                     signed_url = item.get('signed_url')
@@ -758,7 +793,7 @@ Provide a complete and informative response that fully addresses the question wi
                         # Generate URL if not already available
                         signed_url = self.get_cached_signed_url(file_path, get_signed_url)
                         print(f"🔗 Generated URL: {signed_url[:50]}..." if signed_url else "🔗 Failed to generate URL")
-                    
+
                     if signed_url:
                         referenced_documents.append({
                             'name': item['source'],
@@ -769,16 +804,19 @@ Provide a complete and informative response that fully addresses the question wi
                         print(f"🔗 ✅ Added reference document: {item['source']}")
                     else:
                         print(f"🔗 ❌ No URL for document: {item['source']}")
-            
+
             print(f"🔗 Total reference documents: {len(referenced_documents)}")
-            
+
             # Start with the response content
-            final_response = response.content            # Add reference document links if any were found
+            final_response = response.content
+
+            # Add reference document links if any were found
             if referenced_documents:
                 print(f"🔗 Adding {len(referenced_documents)} reference documents to response")
                 final_response += "\n\n📎 **Reference Documents:**"
                 for doc in referenced_documents:
                     if doc.get('url'):  # Only add link if URL exists
+                        # Use proper markdown link format that will render in most markdown processors
                         final_response += f"\n• [{doc['name']}]({doc['url']})"
                     else:  # If no URL, just show the document name
                         final_response += f"\n• {doc['name']} (Document available through HR)"
@@ -794,20 +832,21 @@ Provide a complete and informative response that fully addresses the question wi
                         unique_sources.add(source)
             else:
                 print("🔗 No reference documents found or generated")
-              # 🆕 STEP 10: Add assistant response to chat history
+
+            # 🆕 STEP 10: Add assistant response to chat history
             self.add_to_chat_history(email, 'assistant', final_response)
-            
+
             total_time = time.time() - start_time
             print(f"⚡ Response time: {total_time:.1f}s")
-            
+
             return self.create_response_with_actions(final_response, question, email, user_profile)
-            
+
         except Exception as e:
             print(f"❌ Error: {e}")
             error_response = f"""I'm experiencing technical difficulties at the moment. Please try again in a moment.
 
 If the issue persists, you may want to contact your HR team for assistance."""
-            
+
             # 🆕 Add error response to chat history
             self.add_to_chat_history(email, 'assistant', error_response)
             return self.create_response_with_actions(error_response, question, email, user_profile)
@@ -823,25 +862,6 @@ If the issue persists, you may want to contact your HR team for assistance."""
             print(f"❌ Error detecting region from IP: {e}")
             return 'Unknown'
 
-    def get_user_profile(self, email: str, supabase_client, ip_address: str):
-        """Get complete user profile for comprehensive personalization"""
-        try:
-            response = supabase_client.table("user_profiles") \
-                .select("*") \
-                .eq("email", email) \
-                .execute()
-            if response.data and len(response.data) > 0:
-                user_profile = response.data[0]
-                detected_region = self.detect_region_from_ip(ip_address)
-                user_profile['region'] = self.normalize_region(detected_region)
-                return user_profile
-            detected_region = self.detect_region_from_ip(ip_address)
-            return {'region': self.normalize_region(detected_region)}
-        except Exception as e:
-            print(f"Error fetching user profile: {e}")
-            detected_region = self.detect_region_from_ip(ip_address)
-            return {'region': self.normalize_region(detected_region)}
-
     def get_user_document_acknowledgments(self, email: str, supabase_client) -> Dict[str, Any]:
         """Get user's document acknowledgment status from Supabase"""
         try:
@@ -850,10 +870,10 @@ If the issue persists, you may want to contact your HR team for assistance."""
                 .eq("email", email) \
                 .order("acknowledged_at", desc=True) \
                 .execute()
-            
+
             acknowledgments = {}
             acknowledgment_details = []
-            
+
             if response.data:
                 for ack in response.data:
                     doc_name = ack['document_name']
@@ -867,7 +887,7 @@ If the issue persists, you may want to contact your HR team for assistance."""
                         'acknowledged_at': ack['acknowledged_at'],
                         'acknowledgment_id': ack['id']
                     })
-            
+
             return {
                 'acknowledgments': acknowledgments,
                 'acknowledgment_details': acknowledgment_details,
@@ -886,16 +906,16 @@ If the issue persists, you may want to contact your HR team for assistance."""
         try:
             # Get all mandatory documents
             all_mandatory_docs = self.get_all_mandatory_documents(get_signed_url)
-            
+
             # Get user's acknowledgments
             user_acknowledgments = self.get_user_document_acknowledgments(email, supabase_client)
-            
+
             acknowledged_docs = []
             pending_docs = []
-            
+
             # Normalize acknowledgments for accurate matching
             normalized_acknowledgments = {name.strip().lower(): info for name, info in user_acknowledgments['acknowledgments'].items()}
-            
+
             for doc in all_mandatory_docs:
                 doc_name_normalized = doc['source'].strip().lower()
                 if doc_name_normalized in normalized_acknowledgments:
@@ -914,7 +934,7 @@ If the issue persists, you may want to contact your HR team for assistance."""
                         'acknowledged': False,
                         'status': 'pending_acknowledgment'
                     })
-            
+
             return {
                 'all_documents': all_mandatory_docs,
                 'acknowledged_documents': acknowledged_docs,
@@ -942,40 +962,40 @@ If the issue persists, you may want to contact your HR team for assistance."""
         """Format document acknowledgment status for LLM context"""
         try:
             doc_status = self.get_document_status_summary(email, supabase_client, get_signed_url)
-            
+
             if doc_status['total_documents'] == 0:
                 return ""
-            
+
             context = f"\n\n📋 **DOCUMENT ACKNOWLEDGMENT STATUS FOR {email.upper()}:**\n"
             context += f"📊 Progress: {doc_status['total_acknowledged']}/{doc_status['total_documents']} documents acknowledged ({doc_status['completion_percentage']:.1f}% complete)\n\n"
-            
+
             if doc_status['acknowledged_documents']:
                 context += "✅ **ACKNOWLEDGED DOCUMENTS:**\n"
                 for doc in doc_status['acknowledged_documents']:
                     ack_date = doc['acknowledged_at'][:10] if doc['acknowledged_at'] else 'Unknown'
                     context += f"   • {doc['source']} (acknowledged on {ack_date})\n"
                 context += "\n"
-            
+
             if doc_status['pending_documents']:
                 context += "⏳ **PENDING ACKNOWLEDGMENT (REQUIRED):**\n"
                 for doc in doc_status['pending_documents']:
                     context += f"   • {doc['source']} - REQUIRES ACKNOWLEDGMENT\n"
                 context += "\n"
-            
+
             if doc_status['total_pending'] > 0:
                 context += f"⚠️ **IMPORTANT:** {doc_status['total_pending']} mandatory document(s) still require acknowledgment to complete onboarding.\n"
             else:
                 context += "🎉 **ALL MANDATORY DOCUMENTS ACKNOWLEDGED:** Onboarding documentation requirements are complete!\n"
-            
+
             return context
-        
+
         except Exception as e:
             print(f"Error formatting acknowledgment context: {e}")
             return ""
 
     def generate_enhanced_attestation_response(self, user_profile: Dict = None, get_signed_url=None, email: str = "", supabase_client=None) -> str:
         """Generate enhanced attestation response with acknowledgment status"""
-        
+
         # Get document status summary
         if supabase_client:
             doc_status = self.get_document_status_summary(email, supabase_client, get_signed_url)
@@ -991,25 +1011,25 @@ If the issue persists, you may want to contact your HR team for assistance."""
                 'total_pending': len(mandatory_docs),
                 'completion_percentage': 0
             }
-        
+
         # Personalized greeting
         name = ""
         if user_profile and user_profile.get('full_name'):
             name = f" {user_profile['full_name'].split()[0]}"
         else:
             name = ""
-        
+
         # Status-aware greeting
         if doc_status['total_pending'] == 0:
             greeting = f"Hello{name}! 🎉 Excellent news - you've completed all mandatory onboarding document acknowledgments!"
         else:
             greeting = f"Hello{name}! Here's your current onboarding document status:"
-        
+
         # Build status summary
         status_summary = f"""
 **📊 Onboarding Progress: {doc_status['total_acknowledged']}/{doc_status['total_documents']} documents ({doc_status['completion_percentage']:.1f}% complete)**
 """
-        
+
         # Build acknowledged documents section
         acknowledged_section = ""
         if doc_status['acknowledged_documents']:
@@ -1017,19 +1037,19 @@ If the issue persists, you may want to contact your HR team for assistance."""
             for doc in doc_status['acknowledged_documents']:
                 ack_date = doc['acknowledged_at'][:10] if doc['acknowledged_at'] else 'Unknown'
                 acknowledged_section += f"• {doc['source']} ✓ (acknowledged {ack_date})\n"
-        
+
         # Build pending documents section
         pending_section = ""
         pending_links = ""
         if doc_status['pending_documents']:
             pending_section = "\n**⏳ Pending Acknowledgments (Required):**\n"
             pending_links = "\n**📎 Documents Requiring Acknowledgment:**\n"
-            
+
             for i, doc in enumerate(doc_status['pending_documents'], 1):
                 pending_section += f"{i}. {doc['source']} - **REQUIRES ACKNOWLEDGMENT**\n"
                 if doc.get('signed_url'):
                     pending_links += f"[📄 {doc['source']}]({doc['signed_url']})\n"
-        
+
         # Next steps
         next_steps = ""
         if doc_status['total_pending'] > 0:
@@ -1052,14 +1072,14 @@ If you need to reference any documents later, contact your HR department."""
 {status_summary}{acknowledged_section}{pending_section}{pending_links}{next_steps}"""
 
         return response
-    
+
     def generate_welcome_message(self, user_profile: Dict = None) -> str:
         """Generate personalized welcome message"""
         if user_profile and user_profile.get('full_name'):
             name = user_profile['full_name'].split()[0]  # First name
             role = user_profile.get('role', '')
             dept = user_profile.get('department', '')
-            
+
             if role and dept:
                 return f"Hello {name}! 👋 I'm your AI HR Assistant for {self.company_name}. As a {role} in {dept}, I'm here to help you with any questions about company policies, benefits, or procedures. What can I help you with today?"
             else:
@@ -1077,37 +1097,37 @@ If you need to reference any documents later, contact your HR department."""
             'mandatory documents', 'documents for onboarding', 'onboarding process',
             'documents to acknowledge', 'documents for new employees'
         ]
-        
+
         question_lower = question.lower()
         return any(keyword in question_lower for keyword in attestation_keywords)
-    
+
     def get_all_mandatory_documents(self, get_signed_url) -> List[Dict]:
         """Get ALL mandatory onboarding documents for attestation purposes"""
         if not self.collection:
             return []
-        
+
         try:
             # Get ALL documents marked as mandatory (onboarding folder)
             results = self.collection.get(
                 where={"is_mandatory": True},
                 include=['documents', 'metadatas']
             )
-            
+
             mandatory_docs = []
             unique_sources = set()
-            
+
             for i, metadata in enumerate(results['metadatas']):
                 source = metadata['source']
                 # Only include each document once (avoid duplicates from chunks)
                 if source not in unique_sources:
                     unique_sources.add(source)
-                    
+
                     # Generate signed URL for each document
                     file_path = metadata.get('file_path')
                     signed_url = ""
                     if file_path:
                         signed_url = self.get_cached_signed_url(file_path, get_signed_url)
-                    
+
                     mandatory_docs.append({
                         'content': results['documents'][i] if i < len(results['documents']) else '',
                         'source': source,
@@ -1119,23 +1139,23 @@ If you need to reference any documents later, contact your HR department."""
                         'is_mandatory': True,
                         'signed_url': signed_url
                     })
-            
+
             print(f"📋 Found {len(mandatory_docs)} mandatory documents for attestation")
             return mandatory_docs
-            
+
         except Exception as e:
             print(f"❌ Error getting mandatory documents: {e}")
             return []
-    
+
     def detect_access_request(self, question: str) -> Dict[str, Any]:
         """Detect if the question is asking for system access or portal information"""
         question_lower = question.lower()
         detected_portals = []
-        
+
         # Check for general access keywords
         access_keywords = ["access", "login", "log in", "sign in", "portal", "how to get to", "link to", "url for"]
         is_access_related = any(keyword in question_lower for keyword in access_keywords)
-        
+
         if is_access_related:
             for portal_key, portal_info in self.access_portals.items():
                 for keyword in portal_info["keywords"]:
@@ -1146,7 +1166,7 @@ If you need to reference any documents later, contact your HR department."""
                             "description": portal_info["description"]
                         })
                         break  # Found a match for this portal, move to next
-        
+
         return {
             "is_access_request": len(detected_portals) > 0,
             "portals": detected_portals
@@ -1155,12 +1175,12 @@ If you need to reference any documents later, contact your HR department."""
     def generate_access_response(self, question: str, detected_access: Dict, user_profile: Dict = None) -> str:
         """Generate response for access-related questions"""
         portals = detected_access["portals"]
-        
+
         # Personalized greeting
         name = ""
         if user_profile and user_profile.get('full_name'):
             name = user_profile['full_name'].split()[0] + ", "
-        
+
         if len(portals) == 1:
             portal = portals[0]
             return f"""Hi {name}here's the access information you need:
@@ -1179,13 +1199,13 @@ Access URL: [{portal['url']}]({portal['url']})
 - For account setup: Contact your HR department
 
 If you need access to additional systems, please let me know and I'll provide the appropriate portal links."""
-        
+
         else:
             # Multiple portals detected
             portal_list = ""
             for portal in portals:
                 portal_list += f"- **{portal['description']}**: [{portal['url']}]({portal['url']})\n"
-            
+
             return f"""Hi {name}here are the access portals you requested:
 
 🔗 **System Access Portals:**
@@ -1203,13 +1223,13 @@ If you need access to additional systems, please let me know and I'll provide th
 - For account setup: Contact your HR department
 
 If you need access to additional systems not listed above, please let me know and I'll help you find the right portal."""
-    
+
     def generate_attestation_response(self, user_profile: Dict = None, get_signed_url=None) -> str:
         """Generate a clean, focused response for mandatory document attestation queries"""
-        
+
         # Get mandatory documents
         mandatory_docs = self.get_all_mandatory_documents(get_signed_url)
-        
+
         # Personalized greeting
         name = ""
         if user_profile and user_profile.get('full_name'):
@@ -1223,19 +1243,19 @@ If you need access to additional systems not listed above, please let me know an
                 greeting += f"Here are the mandatory documents you need to acknowledge for your {self.company_name} onboarding process:"
         else:
             greeting = f"Here are the mandatory documents you need to acknowledge for your {self.company_name} onboarding process:"
-        
+
         # Build clean document list
         doc_list = ""
         doc_links = ""
-        
+
         for i, doc in enumerate(mandatory_docs, 1):
             doc_name = doc['source'].replace('_', ' ').title()
             doc_list += f"{i}. **{doc_name}**\n"
-            
+
             # Add document link if available
             if doc.get('signed_url'):
                 doc_links += f"📄 [{doc_name}]({doc['signed_url']})\n"
-        
+
         response = f"""{greeting}
 
 **📋 Mandatory Onboarding Documents:**
@@ -1257,32 +1277,148 @@ For questions about these documents, contact your HR department."""
 
         return response
 
+    # Updated to generate more direct topic suggestions
     def generate_follow_up_actions(self, user_question: str, assistant_response: str, email: str, user_profile: Dict = None) -> List[str]:
-        """No hardcoded logic; follow-ups are generated by the LLM and extracted in create_response_with_actions."""
-        return []
+        """Generate direct topic suggestions based on conversation context"""
+        # Extract key topics from the conversation
+        topics = self.extract_topics_from_conversation(user_question, assistant_response)
+
+        # Get conversation history for context
+        history = self.get_chat_history(email)
+
+        # Build prompt for generating follow-up suggestions
+        prompt = f"""Based on the following conversation, generate TWO direct topic suggestions that the user might want to explore next.
+
+CURRENT QUESTION: {user_question}
+
+ASSISTANT RESPONSE SUMMARY: {assistant_response[:500]}... (truncated)
+
+CONVERSATION TOPICS: {', '.join(topics)}
+
+USER PROFILE: {user_profile if user_profile else 'Not available'}
+
+RULES FOR SUGGESTIONS:
+1. Format as direct topic statements, NOT questions (e.g., "Explain the code of conduct policy" not "Would you like to know about the code of conduct?")
+2. Make suggestions specific and directly related to the information just provided
+3. If discussing region-specific information, ONE suggestion can be about another region's policies
+4. The other suggestion should explore a different but related aspect of the current topic
+5. Keep suggestions concise (5-8 words) and actionable
+6. Do NOT use "Would you like to..." or similar question phrasing
+7. Each suggestion should be a direct topic statement the user could ask about next
+8. Suggestions should be phrased as commands or topics, not questions
+
+Generate exactly TWO topic suggestions:"""
+
+        try:
+            # Generate follow-up suggestions
+            response = self.llm.invoke(prompt)
+
+            # Extract suggestions from response
+            suggestions = []
+            for line in response.content.strip().split('\n'):
+                line = line.strip()
+                if line and (line.startswith('1.') or line.startswith('2.') or line.startswith('-') or line.startswith('•')):
+                    # Clean up the suggestion
+                    suggestion = re.sub(r'^[1-9][.)]|\-|\•|\*', '', line).strip()
+                    if suggestion and len(suggestions) < 2:
+                        suggestions.append(suggestion)
+                elif line and len(suggestions) < 2 and len(line) < 100:  # Reasonable length for a suggestion
+                    suggestions.append(line.strip())
+
+            # Ensure we have exactly 2 suggestions
+            while len(suggestions) < 2:
+                if len(suggestions) == 0:
+                    suggestions.append("Explain company code of conduct")
+                else:
+                    suggestions.append("Show HR contact information")
+
+            return suggestions[:2]  # Return exactly 2 suggestions
+
+        except Exception as e:
+            print(f"Error generating follow-up suggestions: {e}")
+            return [
+                "Explain company code of conduct",
+                "Show HR contact information"
+            ]
+
+    def extract_topics_from_conversation(self, user_question: str, assistant_response: str) -> List[str]:
+        """Extract key topics from the conversation to inform follow-up suggestion generation"""
+        combined_text = f"{user_question} {assistant_response}"
+        combined_text_lower = combined_text.lower()
+
+        # Define topic categories and their keywords
+        topic_categories = {
+            "benefits": ["benefits", "insurance", "health", "dental", "vision", "retirement", "401k", "pension", "pto", "vacation", "leave", "time off"],
+            "policies": ["policy", "policies", "rules", "guidelines", "handbook", "code of conduct", "compliance", "regulations"],
+            "expenses": ["expense", "reimbursement", "claim", "travel", "per diem", "receipt", "budget", "spending"],
+            "onboarding": ["onboarding", "orientation", "new hire", "first day", "training", "setup", "equipment", "laptop"],
+            "payroll": ["payroll", "salary", "compensation", "pay", "direct deposit", "tax", "deduction", "bonus", "raise"],
+            "time_off": ["vacation", "sick leave", "pto", "time off", "holiday", "absence", "leave", "day off"],
+            "performance": ["performance", "review", "evaluation", "feedback", "goals", "objectives", "kpi", "metrics"],
+            "training": ["training", "development", "learning", "course", "certification", "skill", "workshop"],
+            "remote_work": ["remote", "work from home", "wfh", "telecommute", "virtual", "hybrid", "flexible"],
+            "hr_processes": ["process", "procedure", "workflow", "steps", "application", "form", "submit", "approval"],
+            "regions": ["region", "asia", "africa", "america", "australia", "global", "country", "location"]
+        }
+
+        # Detect topics in the conversation
+        detected_topics = []
+        for topic, keywords in topic_categories.items():
+            if any(keyword in combined_text_lower for keyword in keywords):
+                detected_topics.append(topic)
+
+        # Add region if mentioned
+        for region in ["asia", "africa", "america", "australia"]:
+            if region in combined_text_lower and "regions" not in detected_topics:
+                detected_topics.append("regions")
+                break
+
+        return detected_topics if detected_topics else ["general"]
 
     # 🆕 STEP 11: Create helper method to format response with actions
     def create_response_with_actions(self, response_text: str, user_question: str, email: str, user_profile: Dict = None) -> Dict[str, Any]:
-        """Create formatted response dictionary with user-perspective follow-up actions"""
+        """
+        Create formatted response dictionary with direct topic suggestions.
+        Ensures follow-up suggestions/questions are NOT in the main response.
+        """
         print(f"🔍 Creating response with actions for: {email}")
 
-        # Extract lines that are questions (numbered, bulleted, or plain)
-        lines = [line.strip() for line in response_text.splitlines() if line.strip()]
-        follow_up_questions = []
-        for line in lines:
-            # Match numbered or bulleted questions or any line ending with '?'
-            if re.match(r"^(\d+\.\s+|[-*]\s+)?[A-Z].+\?$", line):
-                # Remove leading number/bullet
-                question = re.sub(r"^(\d+\.\s+|[-*]\s+)", "", line)
-                follow_up_questions.append(question)
+        # Remove any "User-Perspective Follow-Up Questions" or similar sections from the main response
+        # BUT PRESERVE the document links section
+        followup_patterns = [
+            r"User-Perspective Follow-Up Questions:.*?(?=\n\n📎 \*\*Reference Documents:\*\*|\Z)",
+            r"Follow[- ]?up Suggestions?:.*?(?=\n\n📎 \*\*Reference Documents:\*\*|\Z)",
+            r"Topic Suggestions?:.*?(?=\n\n📎 \*\*Reference Documents:\*\*|\Z)",
+        ]
 
-        # Limit to exactly two follow-up questions
-        actions = follow_up_questions[:2] if follow_up_questions else []
+        for pattern in followup_patterns:
+            response_text = re.sub(pattern, "", response_text, flags=re.IGNORECASE | re.DOTALL)
 
-        # Remove follow-up questions from the main response text
-        for question in actions:
-            # Remove both numbered and plain versions
-            response_text = re.sub(rf"^.*{re.escape(question)}.*\n?", "", response_text, flags=re.MULTILINE).strip()
+        # Extract direct topic suggestions (as before)
+        suggestion_patterns = [
+            r'\n\d+\.\s+([^\n?]+)(?=\n\d+\.|\Z)',  # Numbered list items without question marks
+            r'\n-\s+([^\n?]+)(?=\n-|\Z)',          # Dash list items without question marks
+            r'\n•\s+([^\n?]+)(?=\n•|\Z)'           # Bullet list items without question marks
+        ]
+
+        suggestions = []
+        for pattern in suggestion_patterns:
+            matches = re.findall(pattern, response_text)
+            for match in matches:
+                if match.strip() and not match.strip().endswith('?'):
+                    suggestions.append(match.strip())
+
+        # If we found at least 2 suggestions, use them
+        if len(suggestions) >= 2:
+            actions = suggestions[:2]
+            # Remove these suggestions from the main response
+            for suggestion in actions:
+                response_text = re.sub(rf"\n[•\-\d\.]+\s+{re.escape(suggestion)}", "", response_text)
+            # Clean up any remaining formatting artifacts
+            response_text = re.sub(r'\n+\s*$', '', response_text)
+        else:
+            # Generate new suggestions if none or not enough were found
+            actions = self.generate_follow_up_actions(user_question, response_text, email, user_profile)
 
         result = {
             "response": response_text.strip(),
@@ -1291,7 +1427,7 @@ For questions about these documents, contact your HR department."""
 
         print(f"🔍 Final result: response length={len(response_text)}, actions={actions}")
         return result
-    
+
     def clear_user_suggested_actions(self, email: str):
         """Clear suggested actions history for a user (useful for new sessions or reset)"""
         with self.user_suggested_actions_lock:
@@ -1312,20 +1448,20 @@ For questions about these documents, contact your HR department."""
                 'total_unique_actions': sum(len(actions) for actions in self.user_suggested_actions.values()),
                 'users_with_actions': {}
             }
-            
+
             for email, actions in self.user_suggested_actions.items():
                 stats['users_with_actions'][email] = len(actions)
-            
+
             return stats
-        
+
     def test_follow_up_generation(self, email: str = "test@example.com"):
         """Test method to debug follow-up action generation"""
         print("🧪 Testing follow-up action generation...")
-        
+
         test_question = "Tell me about leave policies"
         test_response = "Here are the leave policies for Fusefy..."
         test_profile = {"full_name": "Test User", "role": "Developer"}
-        
+
         actions = self.generate_follow_up_actions(test_question, test_response, email, test_profile)
         print(f"🧪 Generated actions: {actions}")
         return actions
