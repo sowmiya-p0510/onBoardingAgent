@@ -1,5 +1,6 @@
 import os
 import requests
+import re  # Add regex support
 from typing import List, Dict, Any, Optional
 import PyPDF2
 from io import BytesIO
@@ -8,11 +9,14 @@ import hashlib
 import time
 import threading
 from datetime import datetime
-import re
+from .welcome_agent import WelcomeAgent  # Import WelcomeAgent for IP detection
 
 class StartupVectorChatAgent:
     def __init__(self):
         print("🚀 Initializing Startup Vector Chat Agent...")
+        
+        # Initialize WelcomeAgent for IP detection
+        self.welcome_agent = WelcomeAgent()
         
         # Lazy initialization for heavy libraries
         self._llm = None
@@ -502,81 +506,52 @@ class StartupVectorChatAgent:
             print(f"❌ Search error: {e}")
             return []
     
-    def normalize_region(self, region_raw: str) -> str:
-        """Normalize region name to one of our canonical regions"""
-        region_raw = (region_raw or "").strip().lower()
-        
-        # Direct matches
-        canonical_regions = {"asia", "africa", "america", "australia"}
-        if region_raw in canonical_regions:
-            return region_raw
-            
-        # Region mapping
-        region_mapping = {
-            # Asia mappings
-            "india": "asia",
-            "china": "asia",
-            "japan": "asia",
-            "korea": "asia",
-            "singapore": "asia",
-            "malaysia": "asia",
-            "thailand": "asia",
-            "vietnam": "asia",
-            "philippines": "asia",
-            "indonesia": "asia",
-            # America mappings
-            "united states": "america",
-            "canada": "america",
-            "mexico": "america",
-            "brazil": "america",
-            "usa": "america",
-            # Australia mappings
-            "new zealand": "australia",
-            "oceania": "australia",
-            # Africa mappings
-            "south africa": "africa",
-            "egypt": "africa",
-            "nigeria": "africa",
-            "kenya": "africa"
-        }
-        
-        # Try to map the region
-        for key, value in region_mapping.items():
-            if key in region_raw:
-                print(f"🌍 Mapped region '{region_raw}' to '{value}'")
-                return value
-        
-        # Default to asia if no match found
-        print(f"⚠️ No region mapping found for '{region_raw}', using default: asia")
-        return "asia"
-    
-    def get_user_profile(self, email: str, supabase_client, ip_address: str):
+    def get_user_profile(self, email: str, supabase_client, ip_address: str = None) -> Dict[str, Any]:
         """Get complete user profile for comprehensive personalization"""
         try:
+            print(f"🔍 Getting user profile for {email}")
+            
+            # Always use WelcomeAgent for IP and region detection
+            print("🌐 Using WelcomeAgent for IP and region detection...")
+            ip_address, detected_region = self.welcome_agent.get_user_ip_and_region()
+            print(f"🌐 WelcomeAgent returned: IP={ip_address}, Region={detected_region}")
+            
+            # Get user profile from Supabase
+            print("📚 Fetching profile from Supabase...")
             response = supabase_client.table("user_profiles") \
                 .select("*") \
                 .eq("email", email) \
                 .execute()
+                
             if response.data and len(response.data) > 0:
                 user_profile = response.data[0]
-                detected_region = self.detect_region_from_ip(ip_address)
-                user_profile['region'] = self.normalize_region(detected_region)
+                # Use detected region from WelcomeAgent
+                user_profile['region'] = detected_region
+                print(f"✅ User profile loaded for {email} with region: {user_profile['region']}")
+                print(f"📋 Profile details: Role={user_profile.get('role', 'N/A')}, Dept={user_profile.get('department', 'N/A')}")
                 return user_profile
-            detected_region = self.detect_region_from_ip(ip_address)
-            return {'region': self.normalize_region(detected_region)}
+                
+            # If no profile found, create minimal profile with region
+            print("ℹ️ No Supabase profile found, creating minimal profile")
+            minimal_profile = {'region': detected_region}
+            print(f"ℹ️ Created minimal profile for {email} with region: {minimal_profile['region']}")
+            return minimal_profile
+            
         except Exception as e:
-            print(f"Error fetching user profile: {e}")
-            detected_region = self.detect_region_from_ip(ip_address)
-            return {'region': self.normalize_region(detected_region)}
+            print(f"❌ Error fetching user profile: {e}")
+            return {'region': 'asia'}  # Default fallback
     
     def process_chat_request(self, question: str, email: str, list_files_in_folder, get_signed_url, check_file_exists, supabase_client=None, ip_address: str = None) -> Dict[str, Any]:
         """Fast chat processing with unlimited in-memory chat history and region detection"""
         start_time = time.time()
         try:
+            # Add question to chat history
             self.add_to_chat_history(email, 'user', question)
             is_first_message = email not in self.user_sessions
             user_profile = None
-            if is_first_message and supabase_client:
+
+            # Get user profile and region
+            if supabase_client:
                 user_profile = self.get_user_profile(email, supabase_client, ip_address)
                 self.user_sessions[email] = True
                 greeting_words = ['hi', 'hello', 'hey', 'good morning', 'good afternoon', 'good evening']
@@ -861,53 +836,6 @@ If the issue persists, you may want to contact your HR team for assistance."""
             # 🆕 Add error response to chat history
             self.add_to_chat_history(email, 'assistant', error_response)
             return self.create_response_with_actions(error_response, question, email, user_profile)
-
-    def detect_region_from_ip(self, ip_address: str) -> str:
-        """Method to detect user's region via IP"""
-        try:
-            # If IP is None or empty, return default region
-            if not ip_address:
-                print("⚠️ No IP address provided, using default region: asia")
-                return "asia"
-                
-            response = requests.get(f'https://ipapi.co/{ip_address}/json/', timeout=5)
-            response.raise_for_status()
-            data = response.json()
-            
-            # Check for rate limit error
-            if data.get('error') and 'rate limit' in str(data.get('reason', '')).lower():
-                print("⚠️ IP API rate limited, using default region: asia")
-                return "asia"
-                
-            country = data.get('country_name', '')
-            if not country:
-                print("⚠️ No country detected, using default region: asia")
-                return "asia"
-                
-            return country
-        except Exception as e:
-            print(f"❌ Error detecting region from IP: {e}")
-            print("⚠️ Using default region: asia")
-            return "asia"
-
-    def get_user_profile(self, email: str, supabase_client, ip_address: str):
-        """Get complete user profile for comprehensive personalization"""
-        try:
-            response = supabase_client.table("user_profiles") \
-                .select("*") \
-                .eq("email", email) \
-                .execute()
-            if response.data and len(response.data) > 0:
-                user_profile = response.data[0]
-                detected_region = self.detect_region_from_ip(ip_address)
-                user_profile['region'] = self.normalize_region(detected_region)
-                return user_profile
-            detected_region = self.detect_region_from_ip(ip_address)
-            return {'region': self.normalize_region(detected_region)}
-        except Exception as e:
-            print(f"Error fetching user profile: {e}")
-            detected_region = self.detect_region_from_ip(ip_address)
-            return {'region': self.normalize_region(detected_region)}
 
     def get_user_document_acknowledgments(self, email: str, supabase_client) -> Dict[str, Any]:
         """Get user's document acknowledgment status from Supabase"""
