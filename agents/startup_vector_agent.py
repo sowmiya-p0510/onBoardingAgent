@@ -52,24 +52,156 @@ class StartupVectorChatAgent:
         
         # Predefined Q&A pairs for common queries
         self.predefined_qa = {
-   "Why did my HSA transfer for June fail?": "Your June HSA transfer failed because you moved to California but didn't complete the required new event registration in Workday Elective. When you relocate to a different state, tax implications and eligibility requirements for HSA contributions can change, requiring you to update your enrollment status. Please log into Workday, navigate to the Benefits section, and complete the new event registration process. This will update your HSA eligibility based on your new location and allow the transfer to be processed. The system automatically holds transfers when there's a pending location change without proper documentation.",
-   
-   "I can't access GitHub Copilot. What's wrong?": "Access to GitHub Copilot is blocked because you haven't completed the mandatory Responsible AI training course. This training covers ethical AI usage, data privacy considerations, code review practices, and compliance requirements for AI-assisted development tools. The system automatically restricts access to AI development tools until this certification is complete to ensure all developers understand proper usage guidelines. Please log into the Learning Management System, locate the 'Responsible AI for Developers' course, and complete all modules including the final assessment. Once you receive your completion certificate, your Copilot access will be restored within 2-4 hours. If you've already completed the training, verify your completion status in the LMS and try signing out and back into your GitHub account.",
-   
-   "Why wasn't my expense reimbursed for Expense ID 12345 submitted on 5/10/2025?": "Expense ID 12345, submitted on 5/10/2025, wasn't reimbursed because it was submitted past the company's 30-day deadline policy. Our expense policy requires all business expenses to be submitted within 30 days of the expense date to ensure timely processing and budget tracking. Late submissions require additional approval and documentation to explain the delay and verify the business necessity. To resolve this, you'll need to resubmit the expense with a detailed explanation of why it was submitted late, attach any supporting documentation, and include approval from your Managing Director. The MD approval serves as confirmation that the expense is still valid and necessary for business operations despite the delay.",
-   
-   "My paycheck is missing the $500 relocation bonus I was promised. How do I get this fixed?": "Your relocation bonus wasn't processed because HR is missing your signed relocation agreement in their records. Relocation bonuses require proper documentation including the signed agreement that outlines the terms, conditions, and repayment clauses if employment ends within a specified period. Without this signed document, payroll cannot process the bonus due to compliance and tax reporting requirements. To resolve this, please locate your signed relocation agreement and upload it to Workday under the 'My Documents' section in the 'Employment Documents' folder. Once uploaded, contact the HR team to flag your case for review and processing. They will verify the document and add the bonus to your next pay cycle, which typically processes within 1-2 business days after approval.",
-   
-   "I'm getting 'Account Locked' when trying to log into ServiceNow. Can you help?": "Your ServiceNow account is locked due to exceeding the maximum number of failed login attempts (5 attempts). This security measure was triggered because your password expired 3 days ago, and the system has been rejecting your login attempts with the old credentials. When passwords expire, continued attempts with the old password are counted as failed attempts, eventually triggering the account lockout for security purposes. To resolve this, you need to reset your password through the company portal using the 'Forgot Password' option or through the self-service password reset tool. After successfully resetting your password, wait approximately 15 minutes for the account lockout to automatically clear from the system before attempting to log in again with your new credentials.",
-   
-   "Why can't I access the client portal even though I completed onboarding last week?": "Client portal access requires completion of both Security Awareness training and GDPR compliance modules, which are separate from the general onboarding process. While you've successfully completed the standard onboarding requirements, the client portal has additional security and compliance prerequisites due to the sensitive client data it contains. You've completed the Security Awareness training, but our records show you're still missing the GDPR compliance module, which covers data protection regulations, client privacy rights, and proper handling of personal information. Please log into the Learning Management System, locate the 'GDPR Compliance for Client-Facing Roles' course, and complete all sections including the final quiz. Once completed, your client portal access will be automatically provisioned within 24 hours.",
-   
-   "My laptop charger broke and I need a replacement urgently for tomorrow's client meeting.": "For urgent hardware requests that impact business operations, you should submit a Priority 1 ticket in ServiceNow under the 'Hardware Request' category and select 'Business Critical' as the urgency level. When submitting the ticket, include detailed information about tomorrow's client meeting, the meeting importance, and any alternative solutions you've already attempted. For immediate assistance, the IT team maintains an inventory of emergency equipment including laptop chargers, adapters, and portable batteries. They can either provide you with a temporary loaner charger today to ensure you're prepared for your meeting, or expedite the procurement and delivery of a permanent replacement charger by end of business today. The Priority 1 designation ensures your request bypasses the standard queue and receives immediate attention from the hardware support team.",
-   
-   "I submitted PTO for next week but it's still showing as 'Pending' in Workday. Will it be approved in time?": "Your PTO request is showing as pending because there's a discrepancy in your available vacation hours balance. According to the system, you're requesting 40 hours of vacation time, but your current accrued balance only shows 32 available hours. This 8-hour shortfall prevents automatic approval and requires manager intervention to determine how to handle the insufficient balance. You have several options to resolve this: you can modify your PTO request to only use the 32 available hours, take the additional 8 hours as unpaid leave (which requires separate approval), or potentially use floating holidays or personal days if available in your balance. Contact your direct manager to discuss which option works best for your situation and to manually approve the modified request. They can also help you understand your accrual rate and plan future time off more effectively.",
-   
-   "My badge isn't working to get into the building. I'm stuck outside and have a meeting in 10 minutes.": "Your badge access was automatically deactivated because your mandatory annual security training expired yesterday. The system is configured to disable building access immediately when security certifications lapse to maintain facility security standards and compliance requirements. For immediate access to get to your meeting, call the security desk at the main entrance using the posted emergency contact number for temporary escort access. Security personnel can verify your identity and provide supervised access to get you to your meeting. However, to permanently reactivate your badge access, you must complete your annual security training today through the Learning Management System. The training covers updated security protocols, emergency procedures, visitor management, and facility access policies. Once you complete the training and receive your certification, your badge access will be automatically restored within 30 minutes."
-}
+            "Why did my HSA transfer for June fail?": """Your June HSA transfer failed because you moved to California but didn't complete the required new event registration in Workday Elective.
+
+- **Issue:**
+    - `-` Relocation to California without completing new event registration
+- **Impact:**
+    - `-` HSA eligibility and tax implications changed
+- **Required Action:**
+    - `1.` Log into Workday
+    - `2.` Navigate to Benefits section
+    - `3.` Complete new event registration
+  
+**Note:** The system automatically holds transfers when there's a pending location change without proper documentation.""",
+            
+            "I can't access GitHub Copilot. What's wrong?": """Access to GitHub Copilot is blocked because you haven't completed the mandatory Responsible AI training course.
+
+- **Required Training:**
+    - `-` Responsible AI for Developers course
+
+- **Course Topics:**
+    - `-` Ethical AI usage
+    - `-` Data privacy considerations
+    - `-` Code review practices
+    - `-` Compliance requirements
+
+- **Resolution Steps:**
+   - `1.` Log into Learning Management System
+   - `2.` Locate 'Responsible AI for Developers' course
+   - `3.` Complete all modules and final assessment
+   - `4.` Wait 2-4 hours for access restoration
+
+**Note:** If already completed, verify completion status in LMS and try signing out/in of GitHub.""",
+            
+            "Why wasn't my expense reimbursed for Expense ID 12345 submitted on 5/10/2025?": """Expense ID 12345 wasn't reimbursed due to late submission (past 30-day deadline).
+
+- **Company Policy:**
+    - `-` All expenses must be submitted within 30 days
+    - `-` Late submissions require special approval
+
+- **Required Actions:**
+   - `1.` Resubmit the expense
+   - `2.` Include:
+       - `-` Detailed explanation for late submission
+       - `-` Supporting documentation
+       - `-` Managing Director approval
+
+**Note:** MD approval confirms expense validity despite the delay.""",
+            
+            "My paycheck is missing the $500 relocation bonus I was promised. How do I get this fixed?": """Your relocation bonus wasn't processed due to missing signed relocation agreement.
+
+- **Required Documentation:**
+    - `-` Signed relocation agreement with:
+        - `-` Terms and conditions
+        - `-` Repayment clauses
+
+- **Resolution Steps:**
+   - `1.` Locate your signed relocation agreement
+   - `2.` Upload to Workday:
+       - `-` Go to 'My Documents' section
+       - `-` Select 'Employment Documents' folder
+   - `3.` Contact HR team for review
+  
+**Processing Time:** 1-2 business days after approval""",
+            
+            "I'm getting 'Account Locked' when trying to log into ServiceNow. Can you help?": """Your ServiceNow account is locked due to exceeding maximum failed login attempts (5 attempts).
+
+- **Root Cause:**
+    - `-` Password expired 3 days ago
+    - `-` Failed attempts with expired password
+
+- **Resolution Steps:**
+   - `1.` Reset password through:
+       - `-` Company portal 'Forgot Password' option
+       - `-` Self-service password reset tool
+   - `2.` Wait 15 minutes for lockout to clear
+   - `3.` Log in with new credentials""",
+            
+            "Why can't I access the client portal even though I completed onboarding last week?": """Client portal access requires additional security training beyond standard onboarding.
+
+- **Required Certifications:**
+    ✓ Security Awareness training (Completed)
+    ⨯ GDPR compliance module (Pending)
+
+- **GDPR Module Topics:**
+    - `-` Data protection regulations
+    - `-` Client privacy rights
+    - `-` Personal information handling
+
+- **Resolution Steps:**
+   - `1.` Log into Learning Management System
+   - `2.` Find 'GDPR Compliance for Client-Facing Roles'
+   - `3.` Complete all sections and final quiz
+
+**Access Activation:** Within 24 hours of completion""",
+            
+            "My laptop charger broke and I need a replacement urgently for tomorrow's client meeting.": """- **Immediate Action Required:**
+   - `1.` Submit Priority 1 ServiceNow ticket:
+       - `-` Category: 'Hardware Request'
+       - `-` Urgency: 'Business Critical'
+
+- **Include in Ticket:**
+    - `-` Client meeting details
+    - `-` Meeting importance
+    - `-` Alternative solutions tried
+
+- **Available Solutions:**
+   - `1.` **Temporary Options:**
+       - `-` Loaner charger
+       - `-` Portable battery
+   - `2.` **Permanent Solution:**
+       - `-` Same-day replacement charger
+
+**Note:** Priority 1 status ensures immediate IT team attention""",
+            
+            "I submitted PTO for next week but it's still showing as 'Pending' in Workday. Will it be approved in time?": """- **Current Situation:**
+    - `-` Requested: 40 hours vacation time
+    - `-` Available: 32 hours
+    - `-` Shortfall: 8 hours
+
+- **Resolution Options:**
+   - `1.` Modify request to 32 available hours
+   - `2.` Take 8 hours as unpaid leave
+   - `3.` Use alternative time off:
+       - `-` Floating holidays
+       - `-` Personal days
+
+- **Next Steps:**
+   - `1.` Contact your direct manager to:
+       - `-` Discuss preferred option
+       - `-` Get manual approval
+       - `-` Review accrual rate""",
+            
+            "My badge isn't working to get into the building. I'm stuck outside and have a meeting in 10 minutes.": """- **Immediate Solution:**
+   - `1.` Call security desk at main entrance
+   - `2.` Use posted emergency contact number
+   - `3.` Get temporary escort access
+
+- **Root Cause:**
+    - `-` Annual security training expired yesterday
+    - `-` Automatic badge deactivation
+
+- **Permanent Resolution:**
+   - `1.` Complete annual security training today:
+       - `-` Security protocols
+       - `-` Emergency procedures
+       - `-` Visitor management
+       - `-` Facility access policies
+   - `2.` Wait 30 minutes for badge reactivation
+
+**Note:** Security personnel will verify identity and provide supervised access for your meeting."""
+        }
         
         # Access portal URLs mapping for system access requests
         self.access_portals = {

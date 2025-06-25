@@ -314,18 +314,18 @@ class WelcomeAgent:
             formatted.append(f"• {doc}")
         return "\n".join(formatted)
 
-    def _get_regional_greeting(self, region: str) -> str:
-        """Enhanced professional regional greetings"""
-        regional_greetings = {
-            "asia": "Welcome to our global team",
-            "africa": "Welcome to our international organization", 
-            "america": "Welcome to our company",
-            "australia": "Welcome to our team",
-            "europe": "Welcome to our organization",
-            "global": "Welcome to our global enterprise"
+    def _get_regional_greeting(self, region: str) -> tuple[str, str]:
+        """Enhanced professional regional greetings with specific context"""
+        regional_context = {
+            "asia": ("Welcome to Fusefy", "Based in the Asia-Pacific region, you'll be part of our strategic growth and innovation initiatives."),
+            "africa": ("Welcome to Fusefy", "As part of our African operations, you'll contribute to our expanding continental presence."),
+            "america": ("Welcome to Fusefy", "From our Americas division, you'll drive forward our regional excellence and innovation."),
+            "australia": ("Welcome to Fusefy", "As part of our Oceania operations, you'll contribute to our regional market leadership."),
+            "europe": ("Welcome to Fusefy", "Within our European division, you'll be part of our continued legacy of excellence.")
         }
         
-        return regional_greetings.get(region, regional_greetings["global"])
+        # Using America's context as default
+        return regional_context.get(region, regional_context["america"])
 
     def _generate_enhanced_welcome_message(self, user_profile: UserProfile, doc_progress: dict, region: str) -> str:
         """Generate enhanced professional welcome message with LLM optimization"""
@@ -340,8 +340,8 @@ class WelcomeAgent:
         # Extract professional name reference
         first_name = user_profile.full_name.split()[0] if user_profile.full_name else "colleague"
 
-        # Get regional greeting
-        regional_greeting = self._get_regional_greeting(region)
+        # Get regional greeting and context
+        regional_greeting, regional_context = self._get_regional_greeting(region)
 
         # Professional document formatting
         acknowledged_docs_text = self._format_acknowledged_docs(doc_progress['acknowledged_documents'])
@@ -381,9 +381,11 @@ MANDATORY REQUIREMENTS FOR OUTPUT:
 
 REQUIRED OUTPUT FORMAT (copy exactly):
 
-**{regional_greeting} to {self.company_name}, {first_name}!**
+**{regional_greeting}, {first_name}!**
 
-We are pleased to formally welcome you to {self.company_name} as {user_profile.role} within our {user_profile.department} department, effective {formatted_joining_date}. Your professional expertise and experience will be valuable additions to our team.
+{regional_context}
+
+We are pleased to formally welcome you to {self.company_name} as {user_profile.role} within our {user_profile.department} department, effective {formatted_joining_date}. Your expertise and experience will be valuable additions to our team.
 
 **📋 Document Compliance Status**
 Current Progress: {doc_progress['completion_percentage']:.0f}% Complete ({doc_progress['total_acknowledged']} of {doc_progress['total_mandatory']} mandatory documents)
@@ -400,16 +402,9 @@ Current Progress: {doc_progress['completion_percentage']:.0f}% Complete ({doc_pr
 3. Access your employee portal to review benefits and policies
 4. Schedule your IT setup and workspace orientation
 
-**🌐 Global Collaboration Note:** Our team spans across continents, so don't worry about time zones - we've got flexible communication channels to keep everyone connected, whether you're starting your day or winding down!
+**🌐 Collaboration Note:** Our organization operates across multiple time zones with flexible communication channels to ensure seamless collaboration.
 
-**Welcome aboard! We're excited to see the great things you'll accomplish here.** 🚀
-
-CRITICAL INSTRUCTIONS:
-- Output ONLY the welcome message content starting with the greeting
-- Do NOT include any explanatory text, instructions, or additional commentary
-- Ensure ALL placeholder values are properly filled in
-- Maintain exact formatting and structure as specified
-- Keep professional tone consistent throughout"""
+**Welcome aboard! We're excited to see the great things you'll accomplish here.** 🚀"""
 
         # Enhanced validation requirements
         required_elements = [
@@ -417,7 +412,7 @@ CRITICAL INSTRUCTIONS:
             "Documents Completed:",
             "Pending Requirements:",
             "🎯 Next Steps:",
-            "🌐 Global Collaboration Note:",
+            "Collaboration Note:",
             "Welcome aboard!"
         ]
 
@@ -434,22 +429,26 @@ CRITICAL INSTRUCTIONS:
                 print(f"Attempt {attempt + 1}: Response missing required professional elements")
             
             # Professional fallback message
-            return self._generate_fallback_message(user_profile, doc_progress, regional_greeting, 
+            return self._generate_fallback_message(user_profile, doc_progress, region, 
                                                  formatted_joining_date, first_name, 
                                                  acknowledged_docs_text, pending_docs_text)
             
         except Exception as e:
             print(f"LLM service error in welcome message generation: {e}")
-            return self._generate_fallback_message(user_profile, doc_progress, regional_greeting, 
+            return self._generate_fallback_message(user_profile, doc_progress, region, 
                                                  formatted_joining_date, first_name, 
                                                  acknowledged_docs_text, pending_docs_text)
 
-    def _generate_fallback_message(self, user_profile, doc_progress, regional_greeting, 
+    def _generate_fallback_message(self, user_profile, doc_progress, region, 
                                   formatted_joining_date, first_name, acknowledged_docs_text, pending_docs_text):
-        """Generate professional fallback message when LLM is unavailable"""
-        return f"""**{regional_greeting} to {self.company_name}, {first_name}!**
+        """Generate professional fallback message"""
+        regional_greeting, regional_context = self._get_regional_greeting(region)
+        
+        return f"""**{regional_greeting}, {first_name}!**
 
-We are pleased to formally welcome you to {self.company_name} as {user_profile.role} within our {user_profile.department} department, effective {formatted_joining_date}. Your professional expertise and experience will be valuable additions to our team.
+{regional_context}
+
+We are pleased to formally welcome you to {self.company_name} as {user_profile.role} within our {user_profile.department} department, effective {formatted_joining_date}. Your expertise and experience will be valuable additions to our team.
 
 **📋 Document Compliance Status**
 Current Progress: {doc_progress['completion_percentage']:.0f}% Complete ({doc_progress['total_acknowledged']} of {doc_progress['total_mandatory']} mandatory documents)
@@ -466,6 +465,6 @@ Current Progress: {doc_progress['completion_percentage']:.0f}% Complete ({doc_pr
 3. Access your employee portal to review benefits and policies
 4. Schedule your IT setup and workspace orientation
 
-**🌐 Global Collaboration Note:** Our team spans across continents, so don't worry about time zones - we've got flexible communication channels to keep everyone connected, whether you're starting your day or winding down!
+**🌐 Collaboration Note:** Our organization operates across multiple time zones with flexible communication channels to ensure seamless collaboration.
 
 **Welcome aboard! We're excited to see the great things you'll accomplish here.** 🚀"""
